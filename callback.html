@@ -1,0 +1,10 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion TikTok</title><link rel="stylesheet" href="style.css"></head>
+<body><main><h1>Connexion TikTok</h1>
+<p id="msg">Copie l'adresse complète de cette page et colle-la dans le terminal du serveur.</p>
+<code id="url"></code><button id="copier">Copier l’adresse</button>
+<script>
+const u=location.href;document.getElementById('url').textContent=u;
+const p=new URLSearchParams(location.search);
+if(p.get('error')){document.getElementById('msg').textContent='TikTok a refusé la connexion : '+p.get('error_description')}
+document.getElementById('copier').onclick=()=>navigator.clipboard.writeText(u).then(()=>{document.getElementById('copier').textContent='Copié ✓'});
+</script></main></body></html>
