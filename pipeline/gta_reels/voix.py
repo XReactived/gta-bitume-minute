@@ -45,8 +45,39 @@ def prononcer(texte: str) -> str:
     return texte
 
 
+CONSIGNE_VOIX = ("Voix masculine jeune, française de France, énergique et complice, comme un présentateur "
+                 "de vidéos gaming sur TikTok. Rythme vif, sourire dans la voix, pas de ton publicitaire. "
+                 "Prononce les pseudos de streamers à la française (Leo se dit Léo).")
+
+
+def _dire_openai(texte: str, sortie: Path) -> float:
+    """Voix réaliste (OpenAI, environ 1 à 2 € par mois pour 5 vidéos par jour)."""
+    import requests
+
+    m = config()["montage"]
+    perso = m.get("prononciation") or {}
+    for mot in sorted(perso, key=len, reverse=True):
+        texte = re.sub(rf"(?<![\wÀ-ÿ]){re.escape(mot)}(?![\wÀ-ÿ])", perso[mot], texte, flags=re.IGNORECASE)
+    r = requests.post("https://api.openai.com/v1/audio/speech", timeout=60,
+                      headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY'].strip()}"},
+                      json={"model": m.get("voix_openai_modele", "gpt-4o-mini-tts"),
+                            "voice": m.get("voix_openai", "ash"), "input": texte,
+                            "instructions": m.get("voix_consigne") or CONSIGNE_VOIX,
+                            "response_format": "pcm"})  # 24 kHz, 16 bits, mono
+    r.raise_for_status()
+    with wave.open(str(sortie), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+        w.writeframes(r.content)
+    return len(r.content) / 2 / 24000
+
+
 def dire(texte: str, sortie: Path) -> float | None:
     """Écrit la phrase en .wav et renvoie sa durée en secondes (None si la voix est indisponible)."""
+    if config()["montage"].get("voix_moteur", "piper") == "openai" and os.environ.get("OPENAI_API_KEY", "").strip():
+        try:
+            return _dire_openai(texte, sortie)
+        except Exception as e:
+            L.warning("Voix réaliste indisponible (%s) : voix gratuite utilisée", e)
     try:
         from piper import SynthesisConfig
 
