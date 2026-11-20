@@ -147,6 +147,8 @@ def controler_stock() -> None:
             ok, problemes = False, ["fichier introuvable"]
         elif _duree(v["fichier"]) >= 179.5:  # anciennes vidéos coupées net à 3 min : la fin manque
             ok, problemes = False, ["vidéo coupée à 3 min, la fin manque"]
+        elif _duree(v["fichier"]) > float(config()["montage"].get("duree_max_s", 90)) + 10:
+            ok, problemes = False, [f"trop longue ({_duree(v['fichier']):.0f} s)"]
         else:
             ok, problemes = verifier(Path(v["fichier"]), [v["fichier"]], [], v["format"] or "top",
                                      {"hook": v["hook"], "legende_complete": v["legende"]})
