@@ -45,9 +45,10 @@ def prononcer(texte: str) -> str:
     return texte
 
 
-CONSIGNE_VOIX = ("Voix masculine jeune, française de France, énergique et complice, comme un présentateur "
-                 "de vidéos gaming sur TikTok. Rythme vif, sourire dans la voix, pas de ton publicitaire. "
-                 "Prononce les pseudos de streamers à la française (Leo se dit Léo).")
+CONSIGNE_VOIX = ("Style coach sportif survolté : voix masculine française de France, très énergique, motivante "
+                 "et punchy, qui donne envie de rester jusqu'au bout. Phrases lancées avec élan, accents forts sur "
+                 "les mots clés, enthousiasme sincère, rythme rapide. Prononce les pseudos de streamers à la "
+                 "française (Leo se dit Léo).")
 
 
 def _dire_openai(texte: str, sortie: Path) -> float:
