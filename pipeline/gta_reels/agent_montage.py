@@ -7,6 +7,7 @@ from pathlib import Path
 from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres
+from .controle import clip_autorise, verifier
 from .voix import dire
 
 L = log("montage")
@@ -170,12 +171,13 @@ def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path |
 
 
 def assembler(morceaux: list[str], sortie: Path, duree_max: float) -> None:
-    """Colle cartes et clips bout à bout (coupe seulement si on dépasse la durée maximale)."""
+    """Colle cartes et clips bout à bout, en entier (ne coupe jamais la fin)."""
     entrees = [x for m in morceaux for x in ("-i", m)]
     n = len(morceaux)
     chaine = "".join(f"[{i}:v][{i}:a]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", chaine,
-           "-map", "[v]", "-map", "[a]", "-t", f"{duree_max:.3f}", *ENCODAGE, "-movflags", "+faststart", sortie.name]
+           "-map", "[v]", "-map", "[a]", "-t", "600", *ENCODAGE,  # jamais couper un clip : 10 min max (limite TikTok)
+           "-movflags", "+faststart", sortie.name]
     subprocess.run(cmd, check=True, cwd=sortie.parent, timeout=1800)
 
 
@@ -202,6 +204,16 @@ def preparer_segment(clip) -> None:
     m = config()["montage"]
     dossier = DATA / "segments" / clip["id"]
     dossier.mkdir(parents=True, exist_ok=True)
+    # Contenu interdit sur TikTok (nudité, sexe, gore…) : le clip est écarté avant tout travail
+    ok, raison = clip_autorise(clip["fichier_brut"], duree(clip["fichier_brut"]))
+    if ok is None:  # contrôle indisponible : on ne monte rien sans contrôle, le clip attend le prochain passage
+        return
+    if not ok:
+        conn = db()
+        conn.execute("UPDATE clips SET statut='refuse', erreur=? WHERE id=?", (raison[:500], clip["id"]))
+        conn.commit()
+        L.warning("Clip écarté (règles TikTok) : %s (%s) — %s", clip["titre"], clip["streamer"], raison)
+        return
     # Certains streamers ont déjà des sous-titres incrustés dans leur stream : on n'en rajoute pas
     avec_st = m["sous_titres"] and not a_deja_des_sous_titres(clip["fichier_brut"], clip["streamer_login"],
                                                                duree(clip["fichier_brut"]))
@@ -292,13 +304,36 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
         morceaux.append(str(dossier / "c_question.mp4"))
     assembler(morceaux, sortie, dmax)
 
+    # contrôle qualité avant d'entrer dans le stock
+    noms = {c["fichier_segment"]: c for c in ordre}
+    etiquettes = []
+    for mc in morceaux:
+        nom = Path(mc).stem
+        if mc in noms:
+            etiquettes.append(f"Clip de {noms[mc]['streamer']} : {noms[mc]['titre']}")
+        elif nom == "c_intro":
+            etiquettes.append(f"Carte d'intro « {gros_intro} »")
+        elif nom.startswith("c") and nom[1:].isdigit():
+            k = int(nom[1:])
+            etiquettes.append(f"Carte d'annonce avant le clip {k + 1} sur {n} ({ordre[k]['streamer']})")
+        else:
+            etiquettes.append({"avant": "Début du clip (avant la pause)", "c_devine": "Carte « que va-t-il se passer ? »",
+                               "apres": "Suite du clip (réponse)", "c_suite": "Carte « la suite dans la partie suivante »",
+                               "c_question": "Carte question finale"}.get(nom, nom))
+    ok, problemes = verifier(sortie, morceaux, etiquettes, fmt, redac)
+    statut = "prete" if ok else "rejetee"
+    if not ok:
+        L.warning("Vidéo refusée par le contrôle qualité : %s", " | ".join(problemes))
+
     score = sum(c["score"] or 0 for c in ordre) / n
     conn.execute(
-        "INSERT INTO videos (fichier, clips, score, hook, legende, format, serie, partie, parties, duree) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO videos (fichier, clips, score, hook, legende, format, serie, partie, parties, duree, statut, erreur) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (str(sortie), ",".join(ids), score, redac["hook"], redac["legende_complete"], fmt, serie, partie, parties,
-         duree(str(sortie))),
+         duree(str(sortie)), statut, " | ".join(problemes)[:500] or None),
     )
+    if not ok and serie:  # une série avec une partie refusée ne doit pas sortir à moitié
+        conn.execute("UPDATE videos SET statut='rejetee' WHERE serie=?", (serie,))
     conn.executemany("UPDATE clips SET statut='compile' WHERE id=?", [(i,) for i in ids])
     conn.commit()
     L.info("Vidéo prête : %s%s, %d clip(s), %.0f s", fmt, f" partie {partie}/{parties}" if serie else "", n,

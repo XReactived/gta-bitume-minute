@@ -1,0 +1,169 @@
+"""Contrôle qualité : chaque vidéo montée est vérifiée avant d'entrer dans le stock.
+
+1. Contrôle technique : la vidéo finale contient bien tous les morceaux (rien de coupé).
+2. Contrôle par Claude : il regarde une image de chaque morceau et lit tous les textes, et vérifie que
+   l'ensemble est cohérent (bon nombre de clips annoncés, numéros dans l'ordre, textes qui collent aux
+   images, pas de sous-titres en double, rien de coupé ou d'illisible).
+Une vidéo refusée n'est jamais envoyée sur TikTok.
+"""
+import base64
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+import anthropic
+
+from .commun import config, log
+
+L = log("controle")
+
+SCHEMA = {"type": "object", "properties": {
+    "ok": {"type": "boolean"},
+    "problemes": {"type": "array", "items": {"type": "string"}},
+}, "required": ["ok", "problemes"], "additionalProperties": False}
+
+
+def _duree(f: str) -> float:
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f],
+                       capture_output=True, text=True, check=True)
+    return float(r.stdout.strip() or 0)
+
+
+def _mosaique(video: str, instants: list[float], largeur: int = 270, hauteur: int = 480, cols: int = 6) -> bytes:
+    with tempfile.TemporaryDirectory() as d:
+        for i, t in enumerate(instants):
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1",
+                            "-vf", f"scale={largeur}:{hauteur}", f"{d}/{i:02d}.jpg"], check=True, timeout=60)
+        cols = min(len(instants), cols)
+        lignes = -(-len(instants) // cols)
+        sortie = Path(d) / "m.jpg"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1", "-i", f"{d}/%02d.jpg", "-vf",
+                        f"tile={cols}x{lignes}:padding=6:color=white", "-frames:v", "1", "-q:v", "4", str(sortie)],
+                       check=True, timeout=60)
+        return sortie.read_bytes()
+
+
+def _modele() -> str:
+    t = config()["tiktok"]
+    return t.get("modele_controle") or t.get("modele_ia", "claude-opus-5-5")
+
+
+def _image_et_texte(image: bytes, texte: str) -> list:
+    return [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": base64.b64encode(image).decode()}},
+            {"type": "text", "text": texte}]
+
+
+REGLES_TIKTOK = (
+    "Règles TikTok (même dans un jeu vidéo) : refuse toute nudité ou seins/fesses visibles, tout contenu sexuel ou "
+    "très suggestif (club de strip-tease, danse érotique, prostitution, scène de sexe), la violence très crue ou "
+    "gore (démembrement, torture, sang en gros plan), l'automutilation, la drogue consommée de façon mise en avant, "
+    "les symboles haineux. La violence classique de GTA (fusillades, courses-poursuites, accidents, bagarres) est "
+    "acceptée."
+)
+
+
+def clip_autorise(video: str, duree: float) -> tuple[bool | None, str]:
+    """Regarde 8 images du clip et dit s'il respecte les règles TikTok. Refus = le clip n'est jamais utilisé."""
+    instants = [max(duree, 1.0) * (i + 1) / 9 for i in range(8)]
+    try:
+        image = _mosaique(video, instants, largeur=480, hauteur=270, cols=4)
+        rep = anthropic.Anthropic().beta.messages.create(
+            model=_modele(), max_tokens=300,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+                "type": "object", "properties": {"autorise": {"type": "boolean"}, "raison": {"type": "string"}},
+                "required": ["autorise", "raison"], "additionalProperties": False}}},
+            messages=[{"role": "user", "content": _image_et_texte(image, (
+                "Voici 8 images d'un clip de stream GTA 6 qu'on veut publier sur TikTok (compte tout public). "
+                f"{REGLES_TIKTOK} Au moindre doute sur de la nudité ou du contenu sexuel, refuse."))}],
+        )
+        r = json.loads(next(b.text for b in rep.content if b.type == "text"))
+        return bool(r["autorise"]), r["raison"]
+    except Exception as e:
+        L.warning("Vérification du contenu impossible (%s) : on réessaiera au prochain passage", e)
+        return None, str(e)[:300]
+
+
+def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str, redac: dict) -> tuple[bool, list[str]]:
+    """Renvoie (ok, problèmes)."""
+    durees = [_duree(m) for m in morceaux]
+    total, reel = sum(durees), _duree(str(sortie))
+    if abs(reel - total) > 1.5:
+        return False, [f"vidéo finale de {reel:.0f} s au lieu de {total:.0f} s : un morceau manque ou est coupé"]
+
+    instants, t = [], 0.0
+    if len(morceaux) == 1:  # vidéo déjà finie (contrôle du stock) : une image toutes les quelques secondes
+        n = 12
+        instants = [reel * (i + 0.5) / n for i in range(n)]
+        etiquettes, durees = [f"Image à {x:.0f} s" for x in instants], [reel / n] * n
+    for d in ([] if instants else durees):
+        instants.append(t + d * 0.5)
+        t += d
+    instants = instants[:24]
+    deroule = "\n".join(f"Image {i + 1} — {e} ({d:.0f} s)" for i, (e, d) in enumerate(zip(etiquettes, durees)))
+    textes = (f"Format : {fmt}\nTitre à l'écran : {redac.get('hook')}\nVoix-off d'intro : {redac.get('intro')}\n"
+              f"Annonces lues : {json.dumps(redac.get('annonces'), ensure_ascii=False)}\n"
+              f"Question : {redac.get('question') or '(aucune)'}\nSuite : {redac.get('suite') or '(aucune)'}\n"
+              f"Légende TikTok : {redac.get('legende_complete')}")
+    try:
+        image = _mosaique(str(sortie), instants)
+        rep = anthropic.Anthropic().beta.messages.create(
+            model=_modele(),
+            max_tokens=800,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
+            system=("Tu es le contrôleur qualité exigeant d'une page TikTok française de moments GTA 6 de streamers. "
+                    "Une vidéo ne part que si elle est parfaite."),
+            messages=[{"role": "user", "content": [
+                *_image_et_texte(image, "")[:1],
+                {"type": "text", "text": (
+                    f"La mosaïque montre, dans l'ordre (gauche à droite, puis ligne suivante), une image prise au milieu "
+                    f"de chaque morceau de la vidéo :\n{deroule}\n\nTextes de la vidéo :\n{textes}\n\n"
+                    "Vérifie que tout est cohérent : le nombre de clips annoncé (« les deux meilleurs moments »…) "
+                    "correspond au nombre de clips réellement présents ; les numéros d'un top vont bien en compte à "
+                    "rebours jusqu'au numéro 1 ; chaque annonce nomme le bon streamer ; le titre, l'intro et la légende "
+                    "ne promettent rien que la vidéo ne montre pas ; aucun texte n'est coupé, illisible ou hors de "
+                    "l'écran ; pas de sous-titres en double sur un même clip (nos sous-titres jaunes + ceux du "
+                    "streamer) ; pas d'image noire ou figée à la place d'un clip ; " + REGLES_TIKTOK + " "
+                    "ok = true seulement si tu ne vois aucun problème réel. Liste chaque problème en une phrase courte.")},
+            ]}],
+        )
+        r = json.loads(next(b.text for b in rep.content if b.type == "text"))
+        return bool(r["ok"]), list(r["problemes"])
+    except Exception as e:  # contrôle IA indisponible : le contrôle technique a déjà réussi
+        L.warning("Contrôle IA indisponible (%s) : seul le contrôle technique a été fait", e)
+        return True, []
+
+
+def controler_stock() -> None:
+    """Revérifie les vidéos déjà prêtes (montées avant le contrôle qualité) et retire celles qui ne vont pas."""
+    from .commun import db
+    conn = db()
+    for v in conn.execute("SELECT * FROM videos WHERE statut='prete' ORDER BY id").fetchall():
+        if not Path(v["fichier"]).exists():
+            ok, problemes = False, ["fichier introuvable"]
+        elif _duree(v["fichier"]) >= 179.5:  # anciennes vidéos coupées net à 3 min : la fin manque
+            ok, problemes = False, ["vidéo coupée à 3 min, la fin manque"]
+        else:
+            ok, problemes = verifier(Path(v["fichier"]), [v["fichier"]], [], v["format"] or "top",
+                                     {"hook": v["hook"], "legende_complete": v["legende"]})
+        if not ok:
+            if v["serie"]:
+                conn.execute("UPDATE videos SET statut='rejetee', erreur=? WHERE serie=?", (" | ".join(problemes)[:500], v["serie"]))
+            else:
+                conn.execute("UPDATE videos SET statut='rejetee', erreur=? WHERE id=?", (" | ".join(problemes)[:500], v["id"]))
+            conn.commit()
+        print(f"Vidéo {v['id']} « {v['hook']} » : {'OK' if ok else 'RETIRÉE — ' + ' | '.join(problemes)}")
+    reste = conn.execute("SELECT COUNT(*) FROM videos WHERE statut='prete'").fetchone()[0]
+    print(f"\n{reste} vidéo(s) prête(s) après contrôle.")
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["stock"]:
+        controler_stock()
+    else:
+        print(__doc__)
