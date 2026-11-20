@@ -122,9 +122,14 @@ def choisir(conn):
         "ORDER BY v.partie LIMIT 1").fetchone()
     if suite:
         return suite
+    # une série ne démarre que si toutes ses parties sont déjà montées : la suite arrive au créneau suivant
+    # et on évite de publier deux fois de suite le même format
+    dernier = conn.execute("SELECT format FROM videos WHERE statut='publiee' ORDER BY publiee_le DESC LIMIT 1").fetchone()
     return conn.execute(
-        "SELECT * FROM videos WHERE statut='prete' AND (serie IS NULL OR partie=1) ORDER BY score DESC LIMIT 1"
-    ).fetchone()
+        "SELECT v.* FROM videos v WHERE v.statut='prete' AND (v.serie IS NULL OR (v.partie=1 AND NOT EXISTS ("
+        "SELECT 1 FROM videos p WHERE p.serie=v.serie AND p.statut!='prete') AND (SELECT COUNT(*) FROM videos p "
+        "WHERE p.serie=v.serie)=v.parties)) ORDER BY (COALESCE(v.format,'top')=?) ASC, v.score DESC LIMIT 1",
+        ((dernier["format"] or "top") if dernier else "",)).fetchone()
 
 
 def lancer() -> int | None:

@@ -107,11 +107,11 @@ def _lignes(texte: str, largeur: int) -> list[str]:
 
 
 def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path | None, duree_voix: float | None,
-          duree_min: float) -> float:
+          duree_min: float, image_a: float = 0.5) -> float:
     """Écran d'annonce : image floutée du clip, gros texte, voix-off. Renvoie sa durée."""
     travail = sortie.parent
     image = travail / f"{sortie.stem}.png"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5", "-i", segment, "-frames:v", "1", str(image)],
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{image_a:.2f}", "-i", segment, "-frames:v", "1", str(image)],
                    check=True, timeout=120)
     d = max(duree_min, (duree_voix or 0) + 0.5)
     filtres = ["[0:v]boxblur=20:4,eq=brightness=-0.3"]
@@ -152,6 +152,25 @@ def assembler(morceaux: list[str], sortie: Path, duree_max: float) -> None:
     subprocess.run(cmd, check=True, cwd=sortie.parent, timeout=1800)
 
 
+def _horodater(mots: list[dict]) -> str:
+    """Transcription avec repères de temps (« [12s] … ») pour que Claude sache où se passe quoi."""
+    morceaux, debut = [], None
+    for w in mots:
+        if debut is None or w["t0"] - debut >= 4:
+            debut = w["t0"]
+            morceaux.append(f"[{int(debut)}s]")
+        morceaux.append(w["mot"])
+    return " ".join(morceaux)
+
+
+def couper(segment: str, sortie: Path, debut: float, fin: float | None) -> None:
+    """Extrait un morceau d'un segment (réencodé pour un assemblage propre)."""
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{debut:.3f}", "-i", segment]
+    if fin is not None:
+        cmd += ["-t", f"{fin - debut:.3f}"]
+    subprocess.run(cmd + [*ENCODAGE, str(sortie)], check=True, timeout=600)
+
+
 def preparer_segment(clip) -> None:
     m = config()["montage"]
     dossier = DATA / "segments" / clip["id"]
@@ -169,7 +188,7 @@ def preparer_segment(clip) -> None:
     conn = db()
     conn.execute(
         "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=? WHERE id=?",
-        (str(sortie), duree(str(sortie)), " ".join(x["mot"] for x in mots), clip["id"]),
+        (str(sortie), duree(str(sortie)), _horodater(mots), clip["id"]),
     )
     conn.commit()
     L.info("Segment prêt : %s (%s)", clip["titre"], clip["streamer"])
@@ -181,6 +200,10 @@ _dernier_plan = 0.0
 def _infos(c) -> dict:
     return {"id": c["id"], "streamer": c["streamer"], "login": c["streamer_login"], "titre": c["titre"] or "",
             "transcription": c["transcription"] or "", "duree": c["duree_segment"] or 0, "score": c["score"] or 0}
+
+
+CARTES_PAR_CLIP = {"top", "recap", "serie", "duel", "astuce"}
+NUMEROTE = {"top", "recap"}
 
 
 def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: str | None, dmax: float) -> None:
@@ -199,7 +222,7 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
         f = dossier / f"{nom}.wav"
         return f, (dire(texte, f) if voix and texte else None)
 
-    morceaux = []
+    morceaux, en_pause = [], False
     vi, di = voix_off(redac["intro"], "intro")
     gros_intro = redac["hook"]
     if fmt == "serie" and f"{partie}/{parties}" not in gros_intro:
@@ -207,17 +230,38 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
     carte(ordre[0]["fichier_segment"], dossier / "c_intro.mp4", gros_intro, None, vi, di, 2.5)
     morceaux.append(str(dossier / "c_intro.mp4"))
     for i, c in enumerate(ordre):
-        if fmt != "solo":
+        if fmt in CARTES_PAR_CLIP:
             va, da = voix_off(redac["annonces"][i], f"a{i}")
-            gros = f"#{n - i}" if fmt == "top" else c["streamer"]
-            carte(c["fichier_segment"], dossier / f"c{i}.mp4", gros, c["streamer"] if fmt == "top" else None, va, da, 2.0)
+            if fmt in NUMEROTE:
+                gros, petit = f"#{n - i}", c["streamer"]
+            elif fmt == "duel":
+                gros, petit = f"CHOIX {i + 1}", c["streamer"]
+            else:
+                gros, petit = c["streamer"], None
+            carte(c["fichier_segment"], dossier / f"c{i}.mp4", gros, petit, va, da, 2.0)
             morceaux.append(str(dossier / f"c{i}.mp4"))
-        morceaux.append(c["fichier_segment"])
+        pause = redac.get("pause_s") or 0
+        if fmt == "devine" and 2 <= pause <= (c["duree_segment"] or 0) - 2:
+            # on coupe juste avant le moment clé et on fait deviner la suite
+            couper(c["fichier_segment"], dossier / "avant.mp4", 0, pause)
+            vq, dq = voix_off(redac["question"] or "À ton avis, qu'est-ce qui va se passer ?", "devine")
+            carte(str(dossier / "avant.mp4"), dossier / "c_devine.mp4", "QUE VA-T-IL SE PASSER ?", "Réponds en commentaire",
+                  vq, dq, 3.0, image_a=max(pause - 1.0, 0.1))
+            couper(c["fichier_segment"], dossier / "apres.mp4", pause, None)
+            morceaux += [str(dossier / "avant.mp4"), str(dossier / "c_devine.mp4"), str(dossier / "apres.mp4")]
+            en_pause = True
+        else:
+            morceaux.append(c["fichier_segment"])
     if redac.get("suite"):
         vs, ds = voix_off(redac["suite"], "suite")
         carte(ordre[-1]["fichier_segment"], dossier / "c_suite.mp4", f"LA SUITE DANS LA PARTIE {partie + 1}", "Abonne-toi",
               vs, ds, 2.5)
         morceaux.append(str(dossier / "c_suite.mp4"))
+    elif redac.get("question") and not en_pause:
+        vq, dq = voix_off(redac["question"], "question")
+        carte(ordre[-1]["fichier_segment"], dossier / "c_question.mp4", redac["question"], "Dis-le en commentaire",
+              vq, dq, 3.0)
+        morceaux.append(str(dossier / "c_question.mp4"))
     assembler(morceaux, sortie, dmax)
 
     score = sum(c["score"] or 0 for c in ordre) / n
@@ -262,7 +306,7 @@ def compiler(forcer: bool = False) -> int:
         serie = f"s{int(time.time())}-{faites}" if v["format"] == "serie" else None
         for k, ids in enumerate(parties, start=1):
             ordre = [par_id[i] for i in ids]
-            if v["format"] == "top":  # compte à rebours : le meilleur clip en dernier
+            if v["format"] in ("top", "recap"):  # compte à rebours : le meilleur clip en dernier
                 ordre.sort(key=lambda c: c["score"] or 0)
             try:
                 fabriquer_partie(ordre, v["format"], k, len(parties), serie, dmax)
