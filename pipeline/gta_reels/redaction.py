@@ -71,7 +71,7 @@ CONSIGNE_PLAN = """Ton travail : décider quelles vidéos fabriquer avec les cli
 - « rafale » : 3 à 6 clips courts et drôles enchaînés sans annonce entre eux (format « hors contexte », rythme rapide). Pour les fous rires, les phrases cultes, les bugs absurdes.
 - « astuce » : 1 à 3 clips où un streamer montre ou découvre quelque chose d'utile ou de surprenant dans le jeu (mécanique, lieu, détail caché). Jamais d'astuce de triche ni de leak.
 - « recap » : « le meilleur de la journée » en compte à rebours, 3 à 5 clips de streamers variés. Seulement le soir (après 18 h), et au plus une fois par jour.
-Durée : adapte-la au contenu, pas l'inverse. Respecte les bornes de durée données. Pour la monétisation TikTok, les vidéos de plus d'1 minute sont préférables : ne fais du court que si le moment le mérite vraiment.
+Durée : courte et rythmée, c'est ce qui marche sur TikTok. Vise 60 à 80 secondes (juste au-dessus d'1 minute pour la monétisation), jamais plus que la borne maximale donnée. Un solo peut être plus court si le moment se suffit. Si un clip est long, mets-en moins dans la vidéo plutôt que d'allonger.
 Variété (très important) : ne fais pas toujours le même type de vidéo. Sur une journée, utilise le plus de formats différents possible : chaque format touche un public différent. Regarde la liste des dernières publications fournie et change de format, de thème et de streamer par rapport à elles. Dans un top, mélange plusieurs streamers dès que possible. Évite de mettre le même streamer en vedette deux fois de suite.
 Suspense : construis de l'attente. Ordonne les clips pour faire monter la tension, garde le moment le plus fort pour la fin, et coupe les séries sur un suspense (un « cliffhanger ») qui donne envie de voir la partie suivante.
 Tu n'es pas obligé d'utiliser tous les clips : garde pour plus tard ceux qui iront mieux avec de futurs clips, ou ignore les clips faibles. N'utilise jamais un clip deux fois. Utilise uniquement les ids fournis."""
@@ -124,6 +124,15 @@ def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
             fmt = "top" if nb > 1 else "solo"
         if fmt in ("rafale", "recap", "top") and nb == 1:
             fmt = "solo"
+        # chaque vidéo (ou partie) doit tenir dans la durée max : on retire les clips les plus faibles
+        for p in parties:
+            while len(p) > 1 and 3 + sum(2.5 + connus[i]["duree"] for i in p) > dmax:
+                p.remove(min(p, key=lambda i: connus[i]["score"]))
+        nb = len(parties[0])
+        if fmt in ("top", "rafale", "recap") and nb == 1 and len(parties) == 1:
+            fmt = "solo"
+        if fmt == "duel" and nb != 2:
+            fmt = "top" if nb > 1 else "solo"
         for p in parties:
             utilises.update(p)
         propre.append({"format": fmt, "parties": parties, "raison": v.get("raison", "")})

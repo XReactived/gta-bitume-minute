@@ -36,7 +36,7 @@ montage:
   # Claude choisit lui-même le format (solo, top, série en plusieurs parties)
   # et la durée de chaque vidéo, entre ces deux bornes.
   duree_min_s: 15
-  duree_max_s: 180
+  duree_max_s: 90           # vidéos courtes et rythmées (Claude vise 60 à 80 s)
   plan_min_clips: 3   # nombre de clips en attente avant de demander un plan à Claude
   # Transcription : large-v3-turbo = bien plus précis que small (un peu plus lent, ~1 min par clip)
   modele_whisper: large-v3-turbo
