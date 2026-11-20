@@ -8,6 +8,7 @@ import time
 import requests
 
 from .commun import DATA, config, db, env, log
+from .notification import notifier
 
 L = log("tiktok")
 API = "https://open.tiktokapis.com/v2"
@@ -146,9 +147,17 @@ def lancer() -> int | None:
         noter_publication(conn, v, pid, mode)
         L.info("%s : vidéo %d (%s)", "Publiée" if mode == "direct" else "Envoyée dans tes brouillons TikTok",
                v["id"], v["hook"])
+        if mode == "direct":
+            notifier("Vidéo publiée sur TikTok", v["hook"], 3, ["tada"])
+        else:
+            notifier("Nouvelle vidéo dans tes brouillons TikTok",
+                     f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
+                     4, ["clapper"])
     except Exception as e:
         conn.execute("UPDATE videos SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], v["id"]))
         L.error("Échec de publication vidéo %d : %s", v["id"], e)
+        notifier("Échec d'envoi vers TikTok", f"La vidéo « {v['hook']} » n'a pas pu partir : {str(e)[:300]}", 4,
+                 ["warning"])
     conn.commit()
     return v["id"]
 
