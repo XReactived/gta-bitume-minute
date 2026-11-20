@@ -7,7 +7,7 @@ from pathlib import Path
 from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres
-from .controle import clip_autorise, verifier
+from .controle import juger_clip, verifier
 from .voix import dire
 
 L = log("montage")
@@ -204,21 +204,25 @@ def preparer_segment(clip) -> None:
     m = config()["montage"]
     dossier = DATA / "segments" / clip["id"]
     dossier.mkdir(parents=True, exist_ok=True)
-    # Contenu interdit sur TikTok (nudité, sexe, gore…) : le clip est écarté avant tout travail
-    ok, raison = clip_autorise(clip["fichier_brut"], duree(clip["fichier_brut"]))
-    if ok is None:  # contrôle indisponible : on ne monte rien sans contrôle, le clip attend le prochain passage
-        return
-    if not ok:
-        conn = db()
-        conn.execute("UPDATE clips SET statut='refuse', erreur=? WHERE id=?", (raison[:500], clip["id"]))
-        conn.commit()
-        L.warning("Clip écarté (règles TikTok) : %s (%s) — %s", clip["titre"], clip["streamer"], raison)
-        return
     # Certains streamers ont déjà des sous-titres incrustés dans leur stream : on n'en rajoute pas
     avec_st = m["sous_titres"] and not a_deja_des_sous_titres(clip["fichier_brut"], clip["streamer_login"],
                                                                duree(clip["fichier_brut"]))
     # transcription toujours faite : Claude en a besoin. Le pseudo et le titre aident Whisper à bien écrire.
     mots = transcrire(clip["fichier_brut"], f"Streamer : {clip['streamer']}. {clip['titre'] or ''}")
+    # Claude juge le clip : règles TikTok (nudité, sexe, gore…) et intérêt sur 10. Seuls les bons clips passent.
+    ok, note, raison = juger_clip(clip["fichier_brut"], duree(clip["fichier_brut"]), clip["streamer"],
+                                  clip["titre"] or "", _horodater(mots))
+    if ok is None:  # Claude indisponible : on ne monte rien sans jugement, le clip attend le prochain passage
+        return
+    note_min = float(m.get("note_min", 7))
+    if not ok or note < note_min:
+        conn = db()
+        motif = ("règles TikTok : " if not ok else f"note {note:.0f}/10 : ") + raison
+        conn.execute("UPDATE clips SET statut='refuse', erreur=? WHERE id=?", (motif[:500], clip["id"]))
+        conn.commit()
+        L.info("Clip écarté — %s (%s) — %s", clip["titre"], clip["streamer"], motif)
+        return
+    L.info("Clip retenu, note %.0f/10 — %s (%s)", note, clip["titre"], clip["streamer"])
     ass = None
     if avec_st and sum(w["sur"] for w in mots) >= 3:
         ass = dossier / "subs.ass"
@@ -227,8 +231,8 @@ def preparer_segment(clip) -> None:
     rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None)
     conn = db()
     conn.execute(
-        "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=? WHERE id=?",
-        (str(sortie), duree(str(sortie)), _horodater(mots), clip["id"]),
+        "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=?, score=? WHERE id=?",
+        (str(sortie), duree(str(sortie)), _horodater(mots), note, clip["id"]),  # score = note de Claude sur 10
     )
     conn.commit()
     L.info("Segment prêt : %s (%s)", clip["titre"], clip["streamer"])

@@ -64,26 +64,37 @@ REGLES_TIKTOK = (
 )
 
 
-def clip_autorise(video: str, duree: float) -> tuple[bool | None, str]:
-    """Regarde 8 images du clip et dit s'il respecte les règles TikTok. Refus = le clip n'est jamais utilisé."""
+def juger_clip(video: str, duree: float, streamer: str, titre: str, transcription: str) -> tuple[bool | None, float, str]:
+    """Claude regarde 8 images et lit ce qui est dit, puis :
+    - vérifie les règles TikTok (refus = le clip n'est jamais utilisé),
+    - note l'intérêt du clip sur 10 pour un public TikTok (drôle, surprenant, compréhensible sans contexte).
+    Renvoie (autorisé, note, raison) ; autorisé = None si Claude est indisponible (on réessaiera)."""
     instants = [max(duree, 1.0) * (i + 1) / 9 for i in range(8)]
     try:
         image = _mosaique(video, instants, largeur=480, hauteur=270, cols=4)
         rep = anthropic.Anthropic().beta.messages.create(
-            model=_modele(), max_tokens=300,
+            model=_modele(), max_tokens=400,
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
-                "type": "object", "properties": {"autorise": {"type": "boolean"}, "raison": {"type": "string"}},
-                "required": ["autorise", "raison"], "additionalProperties": False}}},
+                "type": "object", "properties": {
+                    "autorise": {"type": "boolean"},
+                    "note": {"type": "number", "description": "Intérêt du clip pour TikTok, de 0 à 10"},
+                    "raison": {"type": "string"}},
+                "required": ["autorise", "note", "raison"], "additionalProperties": False}}},
             messages=[{"role": "user", "content": _image_et_texte(image, (
-                "Voici 8 images d'un clip de stream GTA 6 qu'on veut publier sur TikTok (compte tout public). "
-                f"{REGLES_TIKTOK} Au moindre doute sur de la nudité ou du contenu sexuel, refuse."))}],
+                f"Voici 8 images d'un clip Twitch de {streamer} sur GTA 6 ({duree:.0f} s), titre « {titre} ».\n"
+                f"Ce qui est dit (transcription automatique, avec repères de temps) : {transcription[:1500] or '(rien)'}\n\n"
+                f"1) Règles : {REGLES_TIKTOK} Au moindre doute sur de la nudité ou du contenu sexuel, autorise = false.\n"
+                "2) Note de 0 à 10 l'intérêt de ce clip pour une vidéo TikTok grand public, en étant exigeant : "
+                "8-10 = vraiment drôle, surprenant ou spectaculaire, compréhensible sans connaître le streamer ; "
+                "5-7 = sympa sans plus ; 0-4 = ennuyeux, sans action, incompréhensible, menu/chargement, streamer qui "
+                "parle de tout autre chose que le jeu."))}],
         )
         r = json.loads(next(b.text for b in rep.content if b.type == "text"))
-        return bool(r["autorise"]), r["raison"]
+        return bool(r["autorise"]), float(r["note"]), r["raison"]
     except Exception as e:
-        L.warning("Vérification du contenu impossible (%s) : on réessaiera au prochain passage", e)
-        return None, str(e)[:300]
+        L.warning("Jugement du clip impossible (%s) : on réessaiera au prochain passage", e)
+        return None, 0.0, str(e)[:300]
 
 
 def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str, redac: dict) -> tuple[bool, list[str]]:

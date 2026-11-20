@@ -80,7 +80,7 @@ Tu n'es pas obligé d'utiliser tous les clips : garde pour plus tard ceux qui ir
 def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
     """clips : {id, streamer, titre, transcription, duree, score}. Renvoie [{format, parties: [[ids]]}]."""
     liste = "\n\n".join(
-        f"id={c['id']} — {c['streamer']} — {c['duree']:.0f} s — score {c['score']:.1f}\n"
+        f"id={c['id']} — {c['streamer']} — {c['duree']:.0f} s — note de Claude {c['score']:.0f}/10\n"
         f"Titre : {c['titre']}\nCe qui est dit : {(c['transcription'] or '(pas de parole)')[:600]}"
         for c in clips
     )
