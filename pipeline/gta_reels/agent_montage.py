@@ -14,15 +14,30 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _whisper = None
 
 
-def transcrire(video: str) -> list[dict]:
-    """Retourne les mots avec leurs horodatages (Whisper local, gratuit)."""
+def transcrire(video: str, indice: str = "") -> list[dict]:
+    """Retourne les mots avec leurs horodatages (Whisper local, gratuit).
+
+    Chaque mot a "sur" = False quand Whisper n'est pas confiant (bruit du jeu, musique, dialogue anglais
+    des personnages…) : ces mots ne sont pas affichés en sous-titres, mieux vaut rien qu'un texte faux.
+    """
     global _whisper
     from faster_whisper import WhisperModel
 
+    m = config()["montage"]
     if _whisper is None:
-        _whisper = WhisperModel(config()["montage"]["modele_whisper"], device="cpu", compute_type="int8")
-    segments, _ = _whisper.transcribe(video, language="fr", word_timestamps=True, vad_filter=True)
-    return [{"t0": w.start, "t1": w.end, "mot": w.word.strip()} for s in segments for w in (s.words or [])]
+        _whisper = WhisperModel(m.get("modele_whisper", "large-v3-turbo"), device="cpu", compute_type="int8")
+    segments, _ = _whisper.transcribe(
+        video, language="fr", word_timestamps=True, vad_filter=True, beam_size=5,
+        condition_on_previous_text=False,  # évite les phrases inventées qui se répètent
+        initial_prompt=f"Stream Twitch en français sur GTA 6. {indice}".strip(),
+    )
+    mots = []
+    for seg in segments:
+        seg_ok = seg.avg_logprob > -0.9 and seg.no_speech_prob < 0.6 and seg.compression_ratio < 2.4
+        for w in seg.words or []:
+            mots.append({"t0": w.start, "t1": w.end, "mot": w.word.strip(),
+                         "sur": seg_ok and (w.probability or 0) >= float(m.get("confiance_min", 0.45))})
+    return mots
 
 
 def _ts(s: float) -> str:
@@ -40,8 +55,19 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         "Style: Def,DejaVu Sans,78,&H0000F0FF,&H00000000,&H64000000,1,1,6,2,2,60,60,560\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
-    lignes = []
-    blocs = [mots[i:i + 3] for i in range(0, len(mots), 3)]
+    lignes, blocs, bloc = [], [], []
+    for w in mots:  # blocs de 3 mots max, coupés aux pauses et aux mots incertains
+        if not w.get("sur", True):
+            if bloc:
+                blocs.append(bloc)
+            bloc = []
+            continue
+        if bloc and (len(bloc) == 3 or w["t0"] - bloc[-1]["t1"] > 0.6):
+            blocs.append(bloc)
+            bloc = []
+        bloc.append(w)
+    if bloc:
+        blocs.append(bloc)
     for k, bloc in enumerate(blocs):
         texte = " ".join(m["mot"] for m in bloc).upper().replace("{", "").replace("}", "")
         debut, fin = bloc[0]["t0"], bloc[-1]["t1"]
@@ -179,9 +205,10 @@ def preparer_segment(clip) -> None:
     # Certains streamers ont déjà des sous-titres incrustés dans leur stream : on n'en rajoute pas
     avec_st = m["sous_titres"] and not a_deja_des_sous_titres(clip["fichier_brut"], clip["streamer_login"],
                                                                duree(clip["fichier_brut"]))
-    mots = transcrire(clip["fichier_brut"])   # transcription toujours faite : Claude en a besoin
+    # transcription toujours faite : Claude en a besoin. Le pseudo et le titre aident Whisper à bien écrire.
+    mots = transcrire(clip["fichier_brut"], f"Streamer : {clip['streamer']}. {clip['titre'] or ''}")
     ass = None
-    if mots and avec_st:
+    if avec_st and sum(w["sur"] for w in mots) >= 3:
         ass = dossier / "subs.ass"
         ecrire_ass(mots, ass)
     sortie = dossier / "segment.mp4"

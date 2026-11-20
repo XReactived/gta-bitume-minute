@@ -38,7 +38,9 @@ montage:
   duree_min_s: 15
   duree_max_s: 180
   plan_min_clips: 3   # nombre de clips en attente avant de demander un plan à Claude
-  modele_whisper: small     # tiny / base / small / medium (plus gros = plus précis, plus lent)
+  # Transcription : large-v3-turbo = bien plus précis que small (un peu plus lent, ~1 min par clip)
+  modele_whisper: large-v3-turbo
+  confiance_min: 0.45       # en dessous, le mot n'est pas affiché (mieux vaut rien qu'un sous-titre faux)
   sous_titres: true
   # Streamers qui ont déjà leurs propres sous-titres dans le stream : on n'ajoute pas les nôtres
   # (en plus, Claude détecte tout seul les streamers qui ont déjà des sous-titres)
