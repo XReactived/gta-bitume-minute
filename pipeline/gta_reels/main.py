@@ -14,9 +14,21 @@ from .commun import config, db, log
 L = log("main")
 
 
+def horaires_du_jour(cfg: dict, jour: dt.datetime) -> list[str]:
+    """Les horaires peuvent être une simple liste, ou différer selon le jour (semaine, mercredi, week-end)."""
+    h = cfg["tiktok"]["horaires"]
+    if isinstance(h, list):
+        return h
+    if jour.weekday() >= 5:
+        return h.get("weekend") or h["semaine"]
+    if jour.weekday() == 2:
+        return h.get("mercredi") or h["semaine"]
+    return h["semaine"]
+
+
 def creneau_du_moment(cfg: dict) -> str | None:
     maintenant = dt.datetime.now(ZoneInfo(cfg["fuseau_horaire"]))
-    for h in cfg["tiktok"]["horaires"]:
+    for h in horaires_du_jour(cfg, maintenant):
         hh, mm = map(int, h.split(":"))
         cible = maintenant.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if cible <= maintenant < cible + dt.timedelta(minutes=30):

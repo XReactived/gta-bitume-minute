@@ -54,7 +54,11 @@ tiktok:
   mode: brouillon
   # Tant que l'app n'est pas auditée, TikTok force la visibilité privée.
   visibilite: PUBLIC_TO_EVERYONE
-  # Une vidéo toutes les 2 h (heure de Paris)
-  horaires: ["12:00", "14:00", "16:00", "18:00", "20:00", "22:00"]
+  # Heures de pointe TikTok en France (heure de Paris), 5 vidéos par jour :
+  # pause déjeuner, sortie des cours/du travail, soirée (le pic pour le gaming).
+  horaires:
+    semaine:  ["12:30", "17:30", "19:30", "21:00", "22:30"]
+    mercredi: ["12:30", "14:30", "17:30", "19:30", "21:30"]   # après-midi libre pour les collégiens
+    weekend:  ["11:00", "14:00", "17:30", "20:00", "22:30"]   # réveil plus tard, soirée plus longue
   hashtags_fixes: ["#gta6", "#gtavi", "#gta"]
   modele_ia: claude-opus-5-5
