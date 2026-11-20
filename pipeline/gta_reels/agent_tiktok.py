@@ -114,9 +114,22 @@ def noter_publication(conn, v, pid: str, mode: str) -> None:
                     v["hook"], v["legende"].replace("\n", " "), pid])
 
 
+def choisir(conn):
+    """Une série en cours passe en priorité (partie suivante), sinon la meilleure vidéo prête."""
+    suite = conn.execute(
+        "SELECT v.* FROM videos v WHERE v.statut='prete' AND v.serie IS NOT NULL AND v.partie > 1 "
+        "AND EXISTS (SELECT 1 FROM videos p WHERE p.serie=v.serie AND p.partie=v.partie-1 AND p.statut='publiee') "
+        "ORDER BY v.partie LIMIT 1").fetchone()
+    if suite:
+        return suite
+    return conn.execute(
+        "SELECT * FROM videos WHERE statut='prete' AND (serie IS NULL OR partie=1) ORDER BY score DESC LIMIT 1"
+    ).fetchone()
+
+
 def lancer() -> int | None:
     conn = db()
-    v = conn.execute("SELECT * FROM videos WHERE statut='prete' ORDER BY score DESC LIMIT 1").fetchone()
+    v = choisir(conn)
     if not v:
         L.warning("Aucune vidéo prête pour ce créneau")
         return None

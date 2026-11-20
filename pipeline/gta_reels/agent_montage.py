@@ -1,10 +1,11 @@
 """Agent 2 : transforme un clip 16:9 en vidéo verticale 9:16 sous-titrée."""
 import json
 import subprocess
+import time
 from pathlib import Path
 
 from .commun import DATA, config, db, log
-from .redaction import rediger
+from .redaction import plan_par_defaut, planifier, rediger
 from .voix import dire
 
 L = log("montage")
@@ -39,10 +40,15 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
     lignes = []
-    for i in range(0, len(mots), 3):
-        bloc = mots[i:i + 3]
+    blocs = [mots[i:i + 3] for i in range(0, len(mots), 3)]
+    for k, bloc in enumerate(blocs):
         texte = " ".join(m["mot"] for m in bloc).upper().replace("{", "").replace("}", "")
-        lignes.append(f"Dialogue: 0,{_ts(bloc[0]['t0'])},{_ts(bloc[-1]['t1'])},Def,{texte}")
+        debut, fin = bloc[0]["t0"], bloc[-1]["t1"]
+        if k + 1 < len(blocs):  # jamais deux lignes à l'écran en même temps
+            fin = min(fin, blocs[k + 1][0]["t0"] - 0.01)
+        if fin <= debut:
+            continue
+        lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
     chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
 
 
@@ -136,13 +142,13 @@ def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path |
     return d
 
 
-def assembler(morceaux: list[str], sortie: Path, cible: float) -> None:
-    """Colle cartes et clips bout à bout et coupe à la durée cible exacte."""
+def assembler(morceaux: list[str], sortie: Path, duree_max: float) -> None:
+    """Colle cartes et clips bout à bout (coupe seulement si on dépasse la durée maximale)."""
     entrees = [x for m in morceaux for x in ("-i", m)]
     n = len(morceaux)
     chaine = "".join(f"[{i}:v][{i}:a]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", chaine,
-           "-map", "[v]", "-map", "[a]", "-t", f"{cible:.3f}", *ENCODAGE, "-movflags", "+faststart", sortie.name]
+           "-map", "[v]", "-map", "[a]", "-t", f"{duree_max:.3f}", *ENCODAGE, "-movflags", "+faststart", sortie.name]
     subprocess.run(cmd, check=True, cwd=sortie.parent, timeout=1800)
 
 
@@ -150,9 +156,12 @@ def preparer_segment(clip) -> None:
     m = config()["montage"]
     dossier = DATA / "segments" / clip["id"]
     dossier.mkdir(parents=True, exist_ok=True)
-    mots = transcrire(clip["fichier_brut"]) if m["sous_titres"] else []
+    # Certains streamers ont déjà des sous-titres incrustés dans leur stream : on n'en rajoute pas
+    deja = {x.lower() for x in m.get("streamers_sans_sous_titres") or []}
+    avec_st = m["sous_titres"] and clip["streamer_login"].lower() not in deja
+    mots = transcrire(clip["fichier_brut"])   # transcription toujours faite : Claude en a besoin
     ass = None
-    if mots:
+    if mots and avec_st:
         ass = dossier / "subs.ass"
         ecrire_ass(mots, ass)
     sortie = dossier / "segment.mp4"
@@ -166,69 +175,107 @@ def preparer_segment(clip) -> None:
     L.info("Segment prêt : %s (%s)", clip["titre"], clip["streamer"])
 
 
-def _choisir(dispo, cible: float, intro: float, par_carte: float, max_clips: int):
-    choisis, total = [], intro
-    for c in dispo:
-        if len(choisis) >= max_clips:
-            break
-        choisis.append(c)
-        total += par_carte + c["duree_segment"]
-        if total >= cible:
-            return choisis
-    return None
+_dernier_plan = 0.0
 
 
-def compiler() -> int:
-    """Fabrique des tops de durée cible : intro, puis #N … #1 annoncés à la voix avant chaque clip."""
+def _infos(c) -> dict:
+    return {"id": c["id"], "streamer": c["streamer"], "login": c["streamer_login"], "titre": c["titre"] or "",
+            "transcription": c["transcription"] or "", "duree": c["duree_segment"] or 0, "score": c["score"] or 0}
+
+
+def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: str | None, dmax: float) -> None:
+    """Monte une vidéo (ou une partie de série) à partir de segments déjà prêts, dans l'ordre donné."""
     m = config()["montage"]
-    cible = float(m["duree_cible_s"])
     conn = db()
-    faites = 0
-    while True:
-        dispo = conn.execute("SELECT * FROM clips WHERE statut='segment' ORDER BY score DESC").fetchall()
-        choisis = _choisir(dispo, cible, 3.0, 2.5, int(m.get("max_clips", 4)))
-        if not choisis:
-            L.info("%d clip(s) en attente, pas encore assez pour un top de %.0f s", len(dispo), cible)
-            return faites
-        ordre = list(reversed(choisis))  # compte à rebours : le meilleur clip passe en dernier
-        n = len(ordre)
-        ids = [c["id"] for c in ordre]
-        infos = [{"streamer": c["streamer"], "login": c["streamer_login"], "titre": c["titre"] or "",
-                  "transcription": c["transcription"] or ""} for c in ordre]
-        redac = rediger(infos)
+    n = len(ordre)
+    ids = [c["id"] for c in ordre]
+    redac = rediger([_infos(c) for c in ordre], fmt, partie, parties)
+    dossier = DATA / "final" / ("-".join(ids)[:70] + (f"-p{partie}" if serie else ""))
+    dossier.mkdir(parents=True, exist_ok=True)
+    sortie = dossier / "video.mp4"
+    voix = m.get("voix_off", True)
 
-        dossier = DATA / "final" / "-".join(ids)[:80]
-        dossier.mkdir(parents=True, exist_ok=True)
-        sortie = dossier / "video.mp4"
-        try:
-            morceaux = []
-            avec_voix = m.get("voix_off", True)
-            vi = dossier / "intro.wav"
-            di = dire(redac["intro"], vi) if avec_voix else None
-            morceaux.append(str(dossier / "c_intro.mp4"))
-            carte(ordre[0]["fichier_segment"], dossier / "c_intro.mp4", redac["hook"], None, vi, di, 2.5)
-            for i, c in enumerate(ordre):
-                va = dossier / f"a{i}.wav"
-                da = dire(redac["annonces"][i], va) if avec_voix else None
-                nom = dossier / f"c{i}.mp4"
-                carte(c["fichier_segment"], nom, f"#{n - i}", c["streamer"], va, da, 2.0)
-                morceaux += [str(nom), c["fichier_segment"]]
-            assembler(morceaux, sortie, cible)
-        except Exception as e:
-            L.error("Échec de l'assemblage %s : %s", ids, e)
-            for i in ids:  # on écarte ces clips pour ne pas boucler sur la même erreur
-                conn.execute("UPDATE clips SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], i))
-            conn.commit()
-            continue
-        score = sum(c["score"] or 0 for c in choisis) / n
-        conn.execute(
-            "INSERT INTO videos (fichier, clips, score, hook, legende) VALUES (?,?,?,?,?)",
-            (str(sortie), ",".join(ids), score, redac["hook"], redac["legende_complete"]),
-        )
-        conn.executemany("UPDATE clips SET statut='compile' WHERE id=?", [(i,) for i in ids])
-        conn.commit()
-        faites += 1
-        L.info("Top de %.0f s prêt (%d clips) : %s", cible, n, sortie)
+    def voix_off(texte: str, nom: str):
+        f = dossier / f"{nom}.wav"
+        return f, (dire(texte, f) if voix and texte else None)
+
+    morceaux = []
+    vi, di = voix_off(redac["intro"], "intro")
+    gros_intro = redac["hook"]
+    if fmt == "serie" and f"{partie}/{parties}" not in gros_intro:
+        gros_intro = f"PARTIE {partie}/{parties} {gros_intro}"
+    carte(ordre[0]["fichier_segment"], dossier / "c_intro.mp4", gros_intro, None, vi, di, 2.5)
+    morceaux.append(str(dossier / "c_intro.mp4"))
+    for i, c in enumerate(ordre):
+        if fmt != "solo":
+            va, da = voix_off(redac["annonces"][i], f"a{i}")
+            gros = f"#{n - i}" if fmt == "top" else c["streamer"]
+            carte(c["fichier_segment"], dossier / f"c{i}.mp4", gros, c["streamer"] if fmt == "top" else None, va, da, 2.0)
+            morceaux.append(str(dossier / f"c{i}.mp4"))
+        morceaux.append(c["fichier_segment"])
+    if redac.get("suite"):
+        vs, ds = voix_off(redac["suite"], "suite")
+        carte(ordre[-1]["fichier_segment"], dossier / "c_suite.mp4", f"LA SUITE DANS LA PARTIE {partie + 1}", "Abonne-toi",
+              vs, ds, 2.5)
+        morceaux.append(str(dossier / "c_suite.mp4"))
+    assembler(morceaux, sortie, dmax)
+
+    score = sum(c["score"] or 0 for c in ordre) / n
+    conn.execute(
+        "INSERT INTO videos (fichier, clips, score, hook, legende, format, serie, partie, parties, duree) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (str(sortie), ",".join(ids), score, redac["hook"], redac["legende_complete"], fmt, serie, partie, parties,
+         duree(str(sortie))),
+    )
+    conn.executemany("UPDATE clips SET statut='compile' WHERE id=?", [(i,) for i in ids])
+    conn.commit()
+    L.info("Vidéo prête : %s%s, %d clip(s), %.0f s", fmt, f" partie {partie}/{parties}" if serie else "", n,
+           duree(str(sortie)))
+
+
+def compiler(forcer: bool = False) -> int:
+    """Demande à Claude un plan éditorial quand assez de clips attendent, puis fabrique les vidéos."""
+    global _dernier_plan
+    m = config()["montage"]
+    dmin, dmax = float(m.get("duree_min_s", 15)), float(m.get("duree_max_s", 180))
+    conn = db()
+    dispo = conn.execute("SELECT * FROM clips WHERE statut='segment' ORDER BY score DESC").fetchall()
+    if not dispo:
+        return 0
+    stock = conn.execute("SELECT COUNT(*) FROM videos WHERE statut='prete'").fetchone()[0]
+    attente_min = (time.time() - _dernier_plan) / 60
+    assez = len(dispo) >= int(m.get("plan_min_clips", 3))
+    if not forcer and not ((assez and attente_min >= 20) or (stock == 0 and attente_min >= 20)):
+        return 0
+    _dernier_plan = time.time()
+
+    infos = [_infos(c) for c in dispo]
+    try:
+        plan = planifier(infos, dmin, dmax)
+    except Exception as e:
+        L.warning("Plan IA indisponible (%s), plan simple utilisé", e)
+        plan = plan_par_defaut(infos, dmin, dmax)
+    par_id = {c["id"]: c for c in dispo}
+    faites = 0
+    for v in plan:
+        parties = v["parties"]
+        serie = f"s{int(time.time())}-{faites}" if v["format"] == "serie" else None
+        for k, ids in enumerate(parties, start=1):
+            ordre = [par_id[i] for i in ids]
+            if v["format"] == "top":  # compte à rebours : le meilleur clip en dernier
+                ordre.sort(key=lambda c: c["score"] or 0)
+            try:
+                fabriquer_partie(ordre, v["format"], k, len(parties), serie, dmax)
+                faites += 1
+            except Exception as e:
+                L.error("Échec du montage %s : %s", ids, e)
+                if serie:  # on retire les parties déjà faites pour ne jamais publier une série à moitié
+                    conn.execute("UPDATE videos SET statut='erreur', erreur='série incomplète' WHERE serie=?", (serie,))
+                for i in ids:
+                    conn.execute("UPDATE clips SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], i))
+                conn.commit()
+                break  # une série incomplète ne doit pas être publiée à moitié
+    return faites
 
 
 def lancer() -> int:

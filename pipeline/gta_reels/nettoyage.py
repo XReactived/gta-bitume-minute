@@ -24,6 +24,10 @@ def lancer() -> None:
                  "AND ajoute_le < datetime('now','-3 days')")
     # Vidéos prêtes mais jamais publiées depuis 7 jours : périmées
     conn.execute("UPDATE videos SET statut='expiree' WHERE statut='prete' AND creee_le < datetime('now','-7 days')")
+    # Partie d'une série dont la partie précédente a échoué ou expiré : on ne la publiera jamais
+    conn.execute("UPDATE videos SET statut='expiree' WHERE statut='prete' AND serie IS NOT NULL AND partie > 1 "
+                 "AND EXISTS (SELECT 1 FROM videos p WHERE p.serie=videos.serie AND p.partie=videos.partie-1 "
+                 "AND p.statut IN ('erreur','expiree'))")
     conn.commit()
 
     n = 0

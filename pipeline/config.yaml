@@ -12,6 +12,13 @@ clips:
     - anyme023
     - squeezie
     - itachie        # à vérifier
+    # Autres streamers FR qui jouent souvent à GTA (logins à vérifier dans le journal)
+    - gotaga
+    - inoxtag
+    - zerator
+    - ponce
+    - rivenzi
+    - domingo
   # Streamers à ne JAMAIS utiliser (ex. : quelqu'un qui a demandé un retrait)
   exclus: []
   # Ne garder que les clips joués sur GTA VI (sinon tout le contenu des streamers)
@@ -26,15 +33,18 @@ clips:
 
 # --- Agent Montage ---
 montage:
-  # Durée exacte de chaque vidéo publiée. Un clip Twitch fait 60 s max,
-  # donc l'agent colle plusieurs clips bout à bout puis coupe à cette durée.
-  duree_cible_s: 70
+  # Claude choisit lui-même le format (solo, top, série en plusieurs parties)
+  # et la durée de chaque vidéo, entre ces deux bornes.
+  duree_min_s: 15
+  duree_max_s: 180
+  plan_min_clips: 3   # nombre de clips en attente avant de demander un plan à Claude
   modele_whisper: small     # tiny / base / small / medium (plus gros = plus précis, plus lent)
   sous_titres: true
+  # Streamers qui ont déjà leurs propres sous-titres dans le stream : on n'ajoute pas les nôtres
+  streamers_sans_sous_titres: [anyme023]
   # Format « top » : intro, puis #3, #2, #1 annoncés par une voix-off avant chaque clip
   voix_off: true
   voix_modele: fr_FR-siwis-medium   # voix française gratuite (Piper)
-  max_clips: 4                      # clips maximum par vidéo
   credit: true              # "@streamer sur Twitch" affiché en permanence
 
 # --- Agent TikTok ---

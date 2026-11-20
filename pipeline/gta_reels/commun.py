@@ -80,4 +80,9 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DATA / "gta_reels.db", timeout=60)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    for col, typ in (("format", "TEXT"), ("serie", "TEXT"), ("partie", "INTEGER"), ("parties", "INTEGER"), ("duree", "REAL")):
+        try:  # mise à niveau d'une base existante
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {typ}")
+        except sqlite3.OperationalError:
+            pass
     return conn
