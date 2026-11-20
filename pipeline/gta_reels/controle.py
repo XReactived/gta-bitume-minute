@@ -64,11 +64,13 @@ REGLES_TIKTOK = (
 )
 
 
-def juger_clip(video: str, duree: float, streamer: str, titre: str, transcription: str) -> tuple[bool | None, float, str]:
+def juger_clip(video: str, duree: float, streamer: str, titre: str,
+               transcription: str) -> tuple[bool | None, float, str, float, float]:
     """Claude regarde 8 images et lit ce qui est dit, puis :
     - vérifie les règles TikTok (refus = le clip n'est jamais utilisé),
     - note l'intérêt du clip sur 10 pour un public TikTok (drôle, surprenant, compréhensible sans contexte).
-    Renvoie (autorisé, note, raison) ; autorisé = None si Claude est indisponible (on réessaiera)."""
+    - repère où commence et finit vraiment le moment, pour couper les temps morts.
+    Renvoie (autorisé, note, raison, début, fin) ; autorisé = None si Claude est indisponible (on réessaiera)."""
     instants = [max(duree, 1.0) * (i + 1) / 9 for i in range(8)]
     try:
         image = _mosaique(video, instants, largeur=480, hauteur=270, cols=4)
@@ -78,8 +80,10 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str, transcriptio
                 "type": "object", "properties": {
                     "autorise": {"type": "boolean"},
                     "note": {"type": "number", "description": "Intérêt du clip pour TikTok, de 0 à 10"},
-                    "raison": {"type": "string"}},
-                "required": ["autorise", "note", "raison"], "additionalProperties": False}}},
+                    "raison": {"type": "string"},
+                    "debut_s": {"type": "number", "description": "Seconde où garder le début du clip"},
+                    "fin_s": {"type": "number", "description": "Seconde où couper la fin du clip"}},
+                "required": ["autorise", "note", "raison", "debut_s", "fin_s"], "additionalProperties": False}}},
             messages=[{"role": "user", "content": _image_et_texte(image, (
                 f"Voici 8 images d'un clip Twitch de {streamer} sur GTA 6 ({duree:.0f} s), titre « {titre} ».\n"
                 f"Ce qui est dit (transcription automatique, avec repères de temps) : {transcription[:1500] or '(rien)'}\n\n"
@@ -87,13 +91,52 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str, transcriptio
                 "2) Note de 0 à 10 l'intérêt de ce clip pour une vidéo TikTok grand public, en étant exigeant : "
                 "8-10 = vraiment drôle, surprenant ou spectaculaire, compréhensible sans connaître le streamer ; "
                 "5-7 = sympa sans plus ; 0-4 = ennuyeux, sans action, incompréhensible, menu/chargement, streamer qui "
-                "parle de tout autre chose que le jeu."))}],
+                "parle de tout autre chose que le jeu.\n"
+                f"3) Coupe les temps morts (les images sont prises à {', '.join(f'{x:.0f} s' for x in instants)}) : "
+                "debut_s = la seconde où garder le début, pour que la vidéo démarre presque directement sur "
+                "l'action (garde 1 à 2 s de contexte, 0 si le début est déjà bon) ; fin_s = la seconde où le moment est "
+                f"terminé (supprime ce qui traîne après, {duree:.0f} si la fin est bonne). Ne coupe jamais une phrase "
+                "ou le moment clé : en cas de doute, garde."))}],
         )
         r = json.loads(next(b.text for b in rep.content if b.type == "text"))
-        return bool(r["autorise"]), float(r["note"]), r["raison"]
+        return (bool(r["autorise"]), float(r["note"]), r["raison"],
+                float(r.get("debut_s") or 0), float(r.get("fin_s") or duree))
     except Exception as e:
         L.warning("Jugement du clip impossible (%s) : on réessaiera au prochain passage", e)
-        return None, 0.0, str(e)[:300]
+        return None, 0.0, str(e)[:300], 0.0, duree
+
+
+def trouver_camera(video: str, duree: float) -> tuple[float, float, float, float] | None:
+    """Claude repère la caméra du streamer (sa tête filmée) incrustée dans le stream.
+    Renvoie (x, y, largeur, hauteur) en fractions de l'image, ou None s'il n'y en a pas."""
+    try:
+        image = _mosaique(video, [max(duree, 1.0) * 0.4], largeur=960, hauteur=540, cols=1)
+        rep = anthropic.Anthropic().beta.messages.create(
+            model=_modele(), max_tokens=300, **secours(_modele()),
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+                "type": "object", "properties": {
+                    "camera": {"type": "boolean"},
+                    "gauche": {"type": "number"}, "haut": {"type": "number"},
+                    "droite": {"type": "number"}, "bas": {"type": "number"}},
+                "required": ["camera", "gauche", "haut", "droite", "bas"], "additionalProperties": False}}},
+            messages=[{"role": "user", "content": _image_et_texte(image, (
+                "Image d'un stream Twitch de GTA 6 (960 x 540 pixels). Y a-t-il une webcam du streamer (son visage "
+                "filmé en vrai, pas un personnage du jeu) incrustée dans un rectangle ? Si oui, donne le rectangle "
+                "exact de cette webcam en pixels (gauche, haut, droite, bas), bords du cadre compris. Sinon, "
+                "camera = false et mets 0 partout."))}],
+        )
+        r = json.loads(next(b.text for b in rep.content if b.type == "text"))
+        if not r["camera"]:
+            return None
+        x0, y0, x1, y1 = r["gauche"] / 960, r["haut"] / 540, r["droite"] / 960, r["bas"] / 540
+        x0, y0, x1, y1 = max(0.0, x0), max(0.0, y0), min(1.0, x1), min(1.0, y1)
+        l, h = x1 - x0, y1 - y0
+        if l < 0.08 or h < 0.08 or l * h > 0.4:  # trop petit ou trop grand : pas une webcam incrustée
+            return None
+        return x0, y0, l, h
+    except Exception as e:
+        L.warning("Repérage de la caméra impossible (%s) : jeu en plein écran", e)
+        return None
 
 
 def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str, redac: dict) -> tuple[bool, list[str]]:
@@ -108,8 +151,9 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
         n = 12
         instants = [reel * (i + 0.5) / n for i in range(n)]
         etiquettes, durees = [f"Image à {x:.0f} s" for x in instants], [reel / n] * n
-    for d in ([] if instants else durees):
-        instants.append(t + d * 0.5)
+    for e, d in ([] if instants else zip(etiquettes, durees)):
+        # un clip avec un texte posé au début : image prise pendant que le texte est affiché
+        instants.append(t + (min(1.2, d * 0.5) if "texte posé" in e else d * 0.5))
         t += d
     instants = instants[:24]
     deroule = "\n".join(f"Image {i + 1} — {e} ({d:.0f} s)" for i, (e, d) in enumerate(zip(etiquettes, durees)))
@@ -128,8 +172,10 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
             messages=[{"role": "user", "content": [
                 *_image_et_texte(image, "")[:1],
                 {"type": "text", "text": (
-                    f"La mosaïque montre, dans l'ordre (gauche à droite, puis ligne suivante), une image prise au milieu "
-                    f"de chaque morceau de la vidéo :\n{deroule}\n\nTextes de la vidéo :\n{textes}\n\n"
+                    f"La mosaïque montre, dans l'ordre (gauche à droite, puis ligne suivante), une image de chaque "
+                    f"morceau de la vidéo (au début du morceau quand un texte y est posé, sinon au milieu). "
+                    f"Mise en page voulue : image verticale plein écran, soit la webcam du streamer en haut et le jeu "
+                    f"en dessous, soit le jeu recadré au centre sur fond flou :\n{deroule}\n\nTextes de la vidéo :\n{textes}\n\n"
                     "Vérifie que tout est cohérent : le nombre de clips annoncé (« les deux meilleurs moments »…) "
                     "correspond au nombre de clips réellement présents ; les numéros d'un top vont bien en compte à "
                     "rebours jusqu'au numéro 1 ; chaque annonce nomme le bon streamer ; le titre, l'intro et la légende "

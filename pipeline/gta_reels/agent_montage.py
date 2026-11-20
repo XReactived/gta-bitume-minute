@@ -7,7 +7,7 @@ from pathlib import Path
 from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres
-from .controle import juger_clip, verifier
+from .controle import juger_clip, trouver_camera, verifier
 from .voix import dire
 
 L = log("montage")
@@ -48,12 +48,12 @@ def _ts(s: float) -> str:
 
 
 def ecrire_ass(mots: list[dict], chemin: Path) -> None:
-    """Sous-titres façon TikTok : 3 mots à la fois, gros, jaunes, contour noir."""
+    """Sous-titres façon TikTok, mot par mot : 3 mots à l'écran, le mot prononcé en jaune et un peu plus gros."""
     entete = (
-        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n"
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        "Style: Def,DejaVu Sans,78,&H0000F0FF,&H00000000,&H64000000,1,1,6,2,2,60,60,560\n\n"
+        "Style: Def,DejaVu Sans,84,&H00FFFFFF,&H00000000,&H96000000,1,1,7,3,2,50,50,520\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
     lignes, blocs, bloc = [], [], []
@@ -69,14 +69,24 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         bloc.append(w)
     if bloc:
         blocs.append(bloc)
+
+    def propre(m: str) -> str:
+        return m.upper().replace("{", "").replace("}", "").replace("\\", "")
+
     for k, bloc in enumerate(blocs):
-        texte = " ".join(m["mot"] for m in bloc).upper().replace("{", "").replace("}", "")
-        debut, fin = bloc[0]["t0"], bloc[-1]["t1"]
+        fin_bloc = bloc[-1]["t1"]
         if k + 1 < len(blocs):  # jamais deux lignes à l'écran en même temps
-            fin = min(fin, blocs[k + 1][0]["t0"] - 0.01)
-        if fin <= debut:
-            continue
-        lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
+            fin_bloc = min(fin_bloc, blocs[k + 1][0]["t0"] - 0.01)
+        for j, w in enumerate(bloc):  # une ligne par mot : le mot en cours est surligné
+            debut = w["t0"]
+            fin = bloc[j + 1]["t0"] if j + 1 < len(bloc) else fin_bloc
+            fin = min(fin, fin_bloc)
+            if fin <= debut:
+                continue
+            texte = " ".join(
+                ("{\\c&H00E5FF&\\fscx112\\fscy112}" + propre(x["mot"]) + "{\\r}") if x is w else propre(x["mot"])
+                for x in bloc)
+            lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
     chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
 
 
@@ -92,14 +102,43 @@ def duree(video: str) -> float:
     return float(r.stdout.strip())
 
 
-def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | None) -> None:
-    """Un clip -> un segment vertical 1080x1920 (fond flouté, sous-titres, crédit)."""
+HAUT_CAM = 640  # hauteur de la caméra du streamer en haut de l'écran (le jeu prend le reste)
+
+
+def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | None,
+                   camera: tuple[float, float, float, float] | None = None,
+                   debut: float = 0.0, fin: float | None = None) -> None:
+    """Un clip -> un segment vertical 1080x1920 qui remplit l'écran.
+    - avec caméra : la webcam du streamer en haut, le jeu recadré en grand en dessous ;
+    - sans caméra : le jeu recadré en grand au centre, fond flou derrière.
+    debut/fin : partie du clip à garder (temps morts retirés)."""
     travail = sortie.parent
-    filtres = [
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,eq=brightness=-0.15[fond]",
-        "[0:v]scale=1080:-2[avant]",
-        "[fond][avant]overlay=(W-w)/2:(H-h)/2[v0]",
-    ]
+    if camera:
+        x, y, l, h = camera
+        bas = 1920 - HAUT_CAM
+        # le jeu est recadré au centre ; si la webcam déborde dans ce cadre, on le décale un peu pour l'éviter
+        lj = (1080 / bas) * 9 / 16  # largeur du cadre de jeu, en fraction de l'image (source 16:9)
+        x0 = (1 - lj) / 2
+        if x + l > x0 and x + l / 2 < 0.5:      # webcam à gauche
+            x0 = min(x + l, x0 + 0.15)
+        elif x < x0 + lj and x + l / 2 > 0.5:   # webcam à droite
+            x0 = max(x - lj, x0 - 0.15)
+        decalage = min(max(x0 / (1 - lj), 0.0), 1.0)
+        filtres = [
+            "[0:v]split[s1][s2]",
+            f"[s1]crop=iw*{l:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
+            f"scale=1080:{HAUT_CAM}:force_original_aspect_ratio=increase,crop=1080:{HAUT_CAM},setsar=1[cam]",
+            f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:(iw-ow)*{decalage:.4f}:0,scale=1080:{bas},setsar=1[jeu]",
+            "[cam][jeu]vstack,setsar=1[v0]",
+        ]
+    else:
+        filtres = [
+            "[0:v]split[s1][s2]",
+            "[s1]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,"
+            "eq=brightness=-0.2[fond]",
+            "[s2]crop=min(iw\\,ih*0.8):ih,scale=1080:1350,setsar=1[jeu]",
+            "[fond][jeu]overlay=0:285,setsar=1[v0]",
+        ]
     courant = "v0"
     if ass:
         filtres.append(f"[{courant}]subtitles={ass.name}[v1]")
@@ -107,11 +146,12 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
     if credit:
         (travail / "credit.txt").write_text(credit, encoding="utf-8")
         filtres.append(
-            f"[{courant}]drawtext=fontfile={FONT}:textfile=credit.txt:fontsize=42:fontcolor=white@0.9:"
-            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-260[v3]"
+            f"[{courant}]drawtext=fontfile={FONT}:textfile=credit.txt:fontsize=40:fontcolor=white@0.9:"
+            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-240[v3]"
         )
         courant = "v3"
-    entrees = ["-i", source]
+    coupe = ["-ss", f"{debut:.3f}"] + (["-to", f"{fin:.3f}"] if fin else [])
+    entrees = [*coupe, "-i", source]
     audio = "0:a"
     if not _a_du_son(source):  # garantit une piste son pour pouvoir assembler
         entrees += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
@@ -170,11 +210,50 @@ def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path |
     return d
 
 
+def habiller(segment: str, sortie: Path, gros: str | None, petit: str | None, voix: Path | None,
+            duree_voix: float | None, duree_min: float = 2.5) -> None:
+    """Pose un titre sur le début du clip (pas d'écran figé) et y mixe la voix-off, le son du jeu baissé.
+    La vidéo démarre donc directement sur l'action."""
+    travail = sortie.parent
+    d_clip = duree(segment)
+    d = min(d_clip, max(duree_min, (duree_voix or 0) + 0.4))
+    filtres = []
+    y = HAUT_CAM + 30
+    if gros:
+        court = len(gros) <= 4  # « #3 », « 1/2 »…
+        taille = 190 if court else 86
+        for i, ligne in enumerate(_lignes(gros, 7 if court else 16)[:3]):
+            f = travail / f"{sortie.stem}_l{i}.txt"
+            f.write_text(ligne, encoding="utf-8")
+            filtres.append(f"drawtext=fontfile={FONT}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
+                           f"borderw=8:bordercolor=black:box=1:boxcolor=black@0.45:boxborderw=18:"
+                           f"x=(w-text_w)/2:y={y}:enable='lt(t,{d:.2f})'")
+            y += int(taille * 1.25)
+    if petit:
+        f = travail / f"{sortie.stem}_p.txt"
+        f.write_text(petit, encoding="utf-8")
+        filtres.append(f"drawtext=fontfile={FONT}:textfile={f.name}:fontsize=60:fontcolor=0xFFD65A:"
+                       f"borderw=5:bordercolor=black:x=(w-text_w)/2:y={y + 10}:enable='lt(t,{d:.2f})'")
+    video = "[0:v]" + (",".join(filtres) if filtres else "null") + "[v]"
+    entrees = ["-i", segment]
+    if voix and duree_voix:
+        entrees += ["-i", voix.name]
+        audio = (f"[0:a]volume=0.3:enable='lt(t,{duree_voix + 0.3:.2f})'[jeu];"
+                 "[1:a]aresample=48000,aformat=channel_layouts=stereo,adelay=150|150[vo];"
+                 "[jeu][vo]amix=inputs=2:duration=first:normalize=0[a]")
+    else:
+        audio = "[0:a]anull[a]"
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", video + ";" + audio,
+           "-map", "[v]", "-map", "[a]", *ENCODAGE, sortie.name]
+    subprocess.run(cmd, check=True, cwd=travail, timeout=600)
+
+
 def assembler(morceaux: list[str], sortie: Path, duree_max: float) -> None:
     """Colle cartes et clips bout à bout, en entier (ne coupe jamais la fin)."""
     entrees = [x for m in morceaux for x in ("-i", m)]
     n = len(morceaux)
-    chaine = "".join(f"[{i}:v][{i}:a]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+    chaine = ("".join(f"[{i}:v]scale=1080:1920,setsar=1,fps=30[v{i}];" for i in range(n))
+              + "".join(f"[v{i}][{i}:a]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]")
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", chaine,
            "-map", "[v]", "-map", "[a]", "-t", "600", *ENCODAGE, "-crf", "23", "-maxrate", "6M", "-bufsize", "12M",  # fichier plus léger = traité plus vite par TikTok ; jamais coupé (10 min max)
            "-movflags", "+faststart", sortie.name]
@@ -210,8 +289,9 @@ def preparer_segment(clip) -> None:
     # transcription toujours faite : Claude en a besoin. Le pseudo et le titre aident Whisper à bien écrire.
     mots = transcrire(clip["fichier_brut"], f"Streamer : {clip['streamer']}. {clip['titre'] or ''}")
     # Claude juge le clip : règles TikTok (nudité, sexe, gore…) et intérêt sur 10. Seuls les bons clips passent.
-    ok, note, raison = juger_clip(clip["fichier_brut"], duree(clip["fichier_brut"]), clip["streamer"],
-                                  clip["titre"] or "", _horodater(mots))
+    d_brut = duree(clip["fichier_brut"])
+    ok, note, raison, debut, fin = juger_clip(clip["fichier_brut"], d_brut, clip["streamer"],
+                                              clip["titre"] or "", _horodater(mots))
     if ok is None:  # Claude indisponible : on ne monte rien sans jugement, le clip attend le prochain passage
         return
     note_min = float(m.get("note_min", 7))
@@ -223,12 +303,21 @@ def preparer_segment(clip) -> None:
         L.info("Clip écarté — %s (%s) — %s", clip["titre"], clip["streamer"], motif)
         return
     L.info("Clip retenu, note %.0f/10 — %s (%s)", note, clip["titre"], clip["streamer"])
+    # temps morts : on garde seulement le moment utile repéré par Claude (s'il reste assez long)
+    debut, fin = max(0.0, debut), min(d_brut, fin)
+    if fin - debut < max(6.0, 0.35 * d_brut) or (debut < 0.5 and fin > d_brut - 0.5):
+        debut, fin = 0.0, d_brut
+    else:
+        L.info("Temps morts retirés : on garde %.0f s → %.0f s sur %.0f s", debut, fin, d_brut)
+    mots = [dict(w, t0=w["t0"] - debut, t1=w["t1"] - debut) for w in mots if w["t0"] >= debut and w["t1"] <= fin]
+    camera = trouver_camera(clip["fichier_brut"], d_brut) if m.get("camera_en_haut", True) else None
     ass = None
     if avec_st and sum(w["sur"] for w in mots) >= 3:
         ass = dossier / "subs.ass"
         ecrire_ass(mots, ass)
     sortie = dossier / "segment.mp4"
-    rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None)
+    rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None,
+                   camera, debut, fin if fin < d_brut - 0.05 else None)
     conn = db()
     conn.execute(
         "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=?, score=? WHERE id=?",
@@ -266,45 +355,54 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
         f = dossier / f"{nom}.wav"
         return f, (dire(texte, f) if voix and texte else None)
 
-    morceaux, en_pause = [], False
-    vi, di = voix_off(redac["intro"], "intro")
+    morceaux, en_pause, habilles = [], False, {}
     gros_intro = redac["hook"]
     if fmt == "serie" and f"{partie}/{parties}" not in gros_intro:
         gros_intro = f"PARTIE {partie}/{parties} {gros_intro}"
-    carte(ordre[0]["fichier_segment"], dossier / "c_intro.mp4", gros_intro, None, vi, di, 2.5)
-    morceaux.append(str(dossier / "c_intro.mp4"))
     for i, c in enumerate(ordre):
-        if fmt in CARTES_PAR_CLIP:
-            va, da = voix_off(redac["annonces"][i], f"a{i}")
-            if fmt in NUMEROTE:
-                gros, petit = f"#{n - i}", c["streamer"]
-            elif fmt == "duel":
-                gros, petit = f"CHOIX {i + 1}", c["streamer"]
-            else:
-                gros, petit = c["streamer"], None
-            carte(c["fichier_segment"], dossier / f"c{i}.mp4", gros, petit, va, da, 2.0)
-            morceaux.append(str(dossier / f"c{i}.mp4"))
-        pause = redac.get("pause_s") or 0
-        if fmt == "devine" and 2 <= pause <= (c["duree_segment"] or 0) - 2:
-            # on coupe juste avant le moment clé et on fait deviner la suite
-            couper(c["fichier_segment"], dossier / "avant.mp4", 0, pause)
-            vq, dq = voix_off(redac["question"] or "À ton avis, qu'est-ce qui va se passer ?", "devine")
-            carte(str(dossier / "avant.mp4"), dossier / "c_devine.mp4", "QUE VA-T-IL SE PASSER ?", "Réponds en commentaire",
-                  vq, dq, 3.0, image_a=max(pause - 1.0, 0.1))
-            couper(c["fichier_segment"], dossier / "apres.mp4", pause, None)
-            morceaux += [str(dossier / "avant.mp4"), str(dossier / "c_devine.mp4"), str(dossier / "apres.mp4")]
-            en_pause = True
+        # textes posés sur le début du clip (plus d'écran figé : la vidéo démarre sur l'action)
+        if fmt in NUMEROTE:
+            gros, petit = f"#{n - i}", c["streamer"]
+        elif fmt == "duel":
+            gros, petit = f"CHOIX {i + 1}", c["streamer"]
+        elif fmt in CARTES_PAR_CLIP and n > 1:
+            gros, petit = None, c["streamer"]
         else:
-            morceaux.append(c["fichier_segment"])
+            gros, petit = None, None
+        texte_voix = redac["annonces"][i] if fmt in CARTES_PAR_CLIP and i < len(redac["annonces"]) else ""
+        if i == 0:  # accroche en gros sur le premier clip, l'intro lue par-dessus
+            petit = " · ".join(x for x in (gros if gros and len(gros) <= 4 else None, petit) if x) or None
+            gros = gros_intro
+            texte_voix = " ".join(x for x in (redac["intro"], texte_voix) if x)
+        va, da = voix_off(texte_voix, f"a{i}")
+        seg = c["fichier_segment"]
+        pause = redac.get("pause_s") or 0
+        coupe_devine = fmt == "devine" and 2 <= pause <= (c["duree_segment"] or 0) - 2
+        if coupe_devine:
+            # on coupe juste avant le moment clé et on fait deviner la suite
+            couper(seg, dossier / "avant_brut.mp4", 0, pause)
+            seg = str(dossier / "avant_brut.mp4")
+        if gros or petit or da:
+            habiller(seg, dossier / f"h{i}.mp4", gros, petit, va, da, 3.0 if i == 0 else 2.2)
+            habilles[str(dossier / f"h{i}.mp4")] = (c, gros, petit)
+            seg = str(dossier / f"h{i}.mp4")
+        morceaux.append(seg)
+        if coupe_devine:
+            vq, dq = voix_off(redac["question"] or "À ton avis, qu'est-ce qui va se passer ?", "devine")
+            carte(seg, dossier / "c_devine.mp4", "QUE VA-T-IL SE PASSER ?", "Réponds en commentaire",
+                  vq, dq, 3.0, image_a=max(duree(seg) - 0.5, 0.1))
+            couper(c["fichier_segment"], dossier / "apres.mp4", pause, None)
+            morceaux += [str(dossier / "c_devine.mp4"), str(dossier / "apres.mp4")]
+            en_pause = True
     if redac.get("suite"):
         vs, ds = voix_off(redac["suite"], "suite")
         carte(ordre[-1]["fichier_segment"], dossier / "c_suite.mp4", f"LA SUITE DANS LA PARTIE {partie + 1}", "Abonne-toi",
-              vs, ds, 2.5)
+              vs, ds, 2.5, image_a=max((ordre[-1]["duree_segment"] or 1) - 0.5, 0.1))
         morceaux.append(str(dossier / "c_suite.mp4"))
     elif redac.get("question") and not en_pause:
         vq, dq = voix_off(redac["question"], "question")
         carte(ordre[-1]["fichier_segment"], dossier / "c_question.mp4", redac["question"], "Dis-le en commentaire",
-              vq, dq, 3.0)
+              vq, dq, 3.0, image_a=max((ordre[-1]["duree_segment"] or 1) - 0.5, 0.1))
         morceaux.append(str(dossier / "c_question.mp4"))
     assembler(morceaux, sortie, dmax)
 
@@ -315,13 +413,14 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
         nom = Path(mc).stem
         if mc in noms:
             etiquettes.append(f"Clip de {noms[mc]['streamer']} : {noms[mc]['titre']}")
-        elif nom == "c_intro":
-            etiquettes.append(f"Carte d'intro « {gros_intro} »")
-        elif nom.startswith("c") and nom[1:].isdigit():
-            k = int(nom[1:])
-            etiquettes.append(f"Carte d'annonce avant le clip {k + 1} sur {n} ({ordre[k]['streamer']})")
+        elif mc in habilles:
+            c, gros, petit = habilles[mc]
+            k = ordre.index(c)
+            txt = " / ".join(x for x in (gros, petit) if x)
+            etiquettes.append(f"Clip {k + 1} sur {n}, de {c['streamer']} : {c['titre']}"
+                              + (f" (texte posé sur le début : « {txt} »)" if txt else ""))
         else:
-            etiquettes.append({"avant": "Début du clip (avant la pause)", "c_devine": "Carte « que va-t-il se passer ? »",
+            etiquettes.append({"c_devine": "Carte « que va-t-il se passer ? »",
                                "apres": "Suite du clip (réponse)", "c_suite": "Carte « la suite dans la partie suivante »",
                                "c_question": "Carte question finale"}.get(nom, nom))
     ok, problemes = verifier(sortie, morceaux, etiquettes, fmt, redac)

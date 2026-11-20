@@ -57,6 +57,7 @@ montage:
   voix_openai: ash          # autres voix possibles : onyx, echo, ballad, verse, coral, sage
   voix_modele: fr_FR-siwis-medium   # voix gratuite de secours (Piper)
   credit: true              # "@streamer sur Twitch" affiché en permanence
+  camera_en_haut: true      # webcam du streamer en haut, jeu en grand dessous (repérée par Claude)
 
 # --- Agent TikTok ---
 tiktok:

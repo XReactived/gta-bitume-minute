@@ -69,7 +69,10 @@ CONSIGNE_PLAN = """Ton travail : décider quelles vidéos fabriquer avec les cli
 - « rafale » : 3 à 6 clips courts et drôles enchaînés sans annonce entre eux (format « hors contexte », rythme rapide). Pour les fous rires, les phrases cultes, les bugs absurdes.
 - « astuce » : 1 à 3 clips où un streamer montre ou découvre quelque chose d'utile ou de surprenant dans le jeu (mécanique, lieu, détail caché). Jamais d'astuce de triche ni de leak.
 - « recap » : « le meilleur de la journée » en compte à rebours, 3 à 5 clips de streamers variés. Seulement le soir (après 18 h), et au plus une fois par jour.
-Durée : courte et rythmée, c'est ce qui marche sur TikTok. Vise 60 à 80 secondes (juste au-dessus d'1 minute pour la monétisation), jamais plus que la borne maximale donnée. Un solo peut être plus court si le moment se suffit. Si un clip est long, mets-en moins dans la vidéo plutôt que d'allonger.
+Durée : ce qui fait percer sur TikTok, c'est d'être regardé jusqu'au bout. Deux types de vidéos :
+  • les vidéos COURTES (environ 3 vidéos sur 5) : 20 à 45 secondes, un seul moment fort ou 2-3 clips très courts (solo, devine, duel, rafale, petit top). Ce sont elles qui ramènent des abonnés.
+  • les vidéos LONGUES (environ 2 vidéos sur 5) : 65 à 90 secondes, obligatoirement plus d'1 minute pour être rémunérées par TikTok (recap, top, série, astuce), seulement si les clips sont assez bons pour tenir jusqu'au bout.
+Regarde la durée des dernières vidéos pour garder cet équilibre. Jamais plus que la borne maximale donnée. Si un clip est long, mets-en moins dans la vidéo plutôt que d'allonger.
 Variété (très important) : ne fais pas toujours le même type de vidéo. Sur une journée, utilise le plus de formats différents possible : chaque format touche un public différent. Regarde la liste des dernières publications fournie et change de format, de thème et de streamer par rapport à elles. Dans un top, mélange plusieurs streamers dès que possible. Évite de mettre le même streamer en vedette deux fois de suite.
 Suspense : construis de l'attente. Ordonne les clips pour faire monter la tension, garde le moment le plus fort pour la fin, et coupe les séries sur un suspense (un « cliffhanger ») qui donne envie de voir la partie suivante.
 Tu n'es pas obligé d'utiliser tous les clips : garde pour plus tard ceux qui iront mieux avec de futurs clips, ou ignore les clips faibles. N'utilise jamais un clip deux fois. Utilise uniquement les ids fournis."""
@@ -83,9 +86,9 @@ def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
         for c in clips
     )
     dernieres = "\n".join(
-        f"- {r['format'] or 'top'} — {r['hook']} — {r['streamers']}"
+        f"- {r['format'] or 'top'} — {r['duree'] or 0:.0f} s — {r['hook']} — {r['streamers']}"
         for r in db().execute(
-            "SELECT v.format, v.hook, (SELECT group_concat(DISTINCT c.streamer) FROM clips c "
+            "SELECT v.format, v.hook, v.duree, (SELECT group_concat(DISTINCT c.streamer) FROM clips c "
             "WHERE instr(',' || v.clips || ',', ',' || c.id || ',') > 0) AS streamers "
             "FROM videos v ORDER BY v.id DESC LIMIT 10")
     )
@@ -93,7 +96,7 @@ def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
     prompt = (f"Nous sommes le {maintenant:%d/%m/%Y}, il est {maintenant:%H:%M} (heure de Paris).\n\n"
               f"Dernières vidéos fabriquées (de la plus récente à la plus ancienne) :\n{dernieres or '(aucune)'}\n\n"
               f"Bornes de durée par vidéo (ou par partie) : {dmin:.0f} s à {dmax:.0f} s, écrans de voix-off compris "
-              f"(compte environ 3 s d'intro et 2,5 s d'annonce par clip).\n\nClips disponibles :\n\n{liste}\n\n"
+              f"(les textes sont posés sur les clips : compte seulement la durée des clips, plus 3 s si une question finale).\n\nClips disponibles :\n\n{liste}\n\n"
               "Propose le plan des vidéos à fabriquer maintenant.")
     plan = _appeler(CONSIGNE_PLAN, prompt, SCHEMA_PLAN)["videos"]
 
@@ -124,7 +127,7 @@ def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
             fmt = "solo"
         # chaque vidéo (ou partie) doit tenir dans la durée max : on retire les clips les plus faibles
         for p in parties:
-            while len(p) > 1 and 3 + sum(2.5 + connus[i]["duree"] for i in p) > dmax:
+            while len(p) > 1 and 3 + sum(connus[i]["duree"] for i in p) > dmax:
                 p.remove(min(p, key=lambda i: connus[i]["score"]))
         nb = len(parties[0])
         if fmt in ("top", "rafale", "recap") and nb == 1 and len(parties) == 1:
@@ -158,10 +161,10 @@ def plan_par_defaut(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
 SCHEMA_TEXTES = {
     "type": "object",
     "properties": {
-        "hook": {"type": "string", "description": "Titre à l'écran au début, 2 à 6 mots, MAJUSCULES, sans hashtag"},
-        "intro": {"type": "string", "description": "Phrase de voix-off au début, 6 à 14 mots"},
+        "hook": {"type": "string", "description": "Accroche posée en gros sur les 3 premières secondes du clip, 2 à 6 mots, MAJUSCULES, sans hashtag"},
+        "intro": {"type": "string", "description": "Phrase de voix-off lue par-dessus le début du premier clip, 4 à 10 mots, percutante"},
         "annonces": {"type": "array", "items": {"type": "string"},
-                     "description": "Une phrase de voix-off par clip, dans l'ordre, 5 à 12 mots, qui nomme le streamer"},
+                     "description": "Une phrase de voix-off par clip, dans l'ordre, lue par-dessus le début du clip, 3 à 8 mots, qui nomme le streamer"},
         "suite": {"type": "string", "description": "Phrase de fin de partie qui donne envie de voir la suivante (vide si pas une série ou dernière partie)"},
         "question": {"type": "string", "description": "Question posée au public à la fin (duel) ou à la pause (devine), 4 à 10 mots. Peut servir pour d'autres formats si elle fait réagir ; sinon vide."},
         "pause_s": {"type": "number", "description": "Format devine uniquement : seconde du clip où mettre en pause, juste avant le moment clé (d'après les repères [Ns]). 0 pour les autres formats."},
@@ -182,6 +185,7 @@ CONSIGNE_TEXTES = """Ton travail : écrire les textes d'une vidéo dont le forma
 - astuce : chaque annonce explique en une phrase ce que le streamer montre ou découvre.
 - recap : comme un top, mais présenté comme « le meilleur de la journée ».
 Pour les autres formats que duel et devine, « question » peut être une question qui fait réagir en commentaire (ou vide), et « pause_s » vaut 0.
+Les textes sont posés directement sur les clips qui jouent déjà (pas d'écran d'attente) : la voix-off parle par-dessus le jeu, donc phrases très courtes. Le hook doit accrocher dans la première seconde.
 Suspense : le hook et l'intro créent de l'attente sans rien révéler (« attends la fin », « personne ne s'attendait à ça », une question…). Varie les formulations : jamais deux fois la même accroche.
 Ne réutilise pas un hook ou une légende déjà publiés récemment (liste fournie)."""
 
