@@ -74,7 +74,7 @@ tiktok:
   hashtags_fixes: ["#gta6", "#gtavi", "#gta"]
   modele_ia: claude-opus-5-5
   # modèle qui contrôle chaque clip (règles TikTok) et chaque vidéo finie (qualité) avant l'envoi
-  modele_controle: claude-opus-5-5
+  modele_controle: claude-sonnet-5-5
 
 notifications:
   # Notification sur ton téléphone (appli gratuite « ntfy ») à chaque vidéo envoyée, avec la légende.
