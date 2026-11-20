@@ -15,7 +15,7 @@ from pathlib import Path
 
 import anthropic
 
-from .commun import config, db, log
+from .commun import config, db, log, secours
 
 L = log("sous-titres")
 
@@ -39,10 +39,8 @@ def _mosaique(video: str, duree: float) -> bytes:
 
 def _demander_a_claude(image: bytes) -> bool:
     rep = anthropic.Anthropic().beta.messages.create(
-        model=config()["tiktok"].get("modele_ia", "claude-opus-5-5"),
-        max_tokens=300,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
+        model=config()["tiktok"].get("modele_controle") or config()["tiktok"].get("modele_ia", "claude-opus-5-5"),
+        max_tokens=300, **secours(config()["tiktok"].get("modele_controle") or config()["tiktok"].get("modele_ia", "")),
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
             "type": "object", "properties": {"sous_titres": {"type": "boolean"}, "raison": {"type": "string"}},
             "required": ["sous_titres", "raison"], "additionalProperties": False}}},

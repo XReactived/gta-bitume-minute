@@ -72,9 +72,9 @@ tiktok:
     mercredi: ["12:30", "14:30", "17:30", "19:30", "21:30"]   # après-midi libre pour les collégiens
     weekend:  ["11:00", "14:00", "17:30", "20:00", "22:30"]   # réveil plus tard, soirée plus longue
   hashtags_fixes: ["#gta6", "#gtavi", "#gta"]
-  modele_ia: claude-opus-5-5
+  modele_ia: claude-sonnet-5-5      # écrit les plans et les textes
   # modèle qui contrôle chaque clip (règles TikTok) et chaque vidéo finie (qualité) avant l'envoi
-  modele_controle: claude-sonnet-5-5
+  modele_controle: claude-haiku-5-5   # regarde chaque clip et chaque vidéo (très bon marché)
 
 notifications:
   # Notification sur ton téléphone (appli gratuite « ntfy ») à chaque vidéo envoyée, avec la légende.

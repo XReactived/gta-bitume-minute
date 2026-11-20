@@ -14,7 +14,7 @@ from pathlib import Path
 
 import anthropic
 
-from .commun import config, log
+from .commun import config, log, secours
 
 L = log("controle")
 
@@ -73,8 +73,7 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str, transcriptio
     try:
         image = _mosaique(video, instants, largeur=480, hauteur=270, cols=4)
         rep = anthropic.Anthropic().beta.messages.create(
-            model=_modele(), max_tokens=400,
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            model=_modele(), max_tokens=400, **secours(_modele()),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
                 "type": "object", "properties": {
                     "autorise": {"type": "boolean"},
@@ -122,9 +121,7 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
         image = _mosaique(str(sortie), instants)
         rep = anthropic.Anthropic().beta.messages.create(
             model=_modele(),
-            max_tokens=800,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
+            max_tokens=800, **secours(_modele()),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
             system=("Tu es le contrôleur qualité exigeant d'une page TikTok française de moments GTA 6 de streamers. "
                     "Une vidéo ne part que si elle est parfaite."),

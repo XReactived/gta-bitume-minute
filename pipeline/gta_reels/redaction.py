@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
-from .commun import config, db, log
+from .commun import config, db, log, secours
 
 L = log("redaction")
 
@@ -21,9 +21,7 @@ def _appeler(consigne: str, prompt: str, schema: dict, max_tokens: int = 4000) -
     t = config()["tiktok"]
     rep = anthropic.Anthropic().beta.messages.create(
         model=t.get("modele_ia", "claude-opus-5-5"),
-        max_tokens=max_tokens,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
+        max_tokens=max_tokens, **secours(t.get("modele_ia", "claude-opus-5-5")),
         system=CHARTE + "\n\n" + consigne,
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
         messages=[{"role": "user", "content": prompt}],

@@ -86,3 +86,10 @@ def db() -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
     return conn
+
+
+def secours(modele: str) -> dict:
+    """Bascule automatique vers un autre modèle si Claude refuse (seulement pour les modèles qui le permettent)."""
+    if any(m in modele for m in ("opus-5", "sonnet-5-5", "fable", "mythos")):
+        return {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+    return {}
