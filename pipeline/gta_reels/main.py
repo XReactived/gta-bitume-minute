@@ -45,9 +45,14 @@ def boucle_publication() -> None:
             if cle:
                 conn = db()
                 if not conn.execute("SELECT 1 FROM creneaux WHERE cle=?", (cle,)).fetchone():
-                    conn.execute("INSERT INTO creneaux (cle) VALUES (?)", (cle,))
-                    conn.commit()
-                    agent_tiktok.lancer()
+                    L.info("Créneau %s : envoi d'une vidéo vers TikTok", cle)
+                    try:
+                        agent_tiktok.lancer()
+                    finally:
+                        # noté seulement une fois l'envoi terminé : si le serveur redémarre pendant l'envoi,
+                        # le créneau est retenté au redémarrage au lieu d'être perdu
+                        conn.execute("INSERT OR IGNORE INTO creneaux (cle) VALUES (?)", (cle,))
+                        conn.commit()
         except Exception as e:
             L.exception("Erreur de publication (on continue) : %s", e)
         time.sleep(30)
