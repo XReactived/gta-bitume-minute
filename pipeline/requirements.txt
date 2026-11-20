@@ -6,3 +6,4 @@ faster-whisper>=1.2.1
 python-dotenv>=1.0
 piper-tts>=1.3
 av==18.1.0  # version testée avec faster-whisper sur le serveur
+tzdata  # fuseaux horaires (Europe/Paris) même si l'image Docker n'en a pas
