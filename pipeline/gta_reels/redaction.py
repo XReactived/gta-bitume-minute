@@ -13,7 +13,8 @@ CHARTE = """Tu es le rédacteur en chef de « Bitume Minute », une page fan Tik
 Règles permanentes :
 - Ne promets rien que les clips ne montrent pas. Jamais « officiel », « confirmé », « exclu » : on n'est pas Rockstar.
 - Jamais de leak, de rumeur, d'astuce pour jouer avant la sortie ou de triche. Aucun spoiler de l'histoire dans un titre.
-- Voix-off : phrases courtes, naturelles à l'oral, ton complice et drôle, sans emoji, hashtag ni abréviation."""
+- Voix-off : phrases courtes, naturelles à l'oral, ton complice et drôle, sans emoji, hashtag ni abréviation.
+- Voix-off : une voix de synthèse lit le texte tel quel. Écris les pseudos et les mots anglais comme ils se prononcent en français (« Léo » et pas « Leo », « Squizi », « strimeur »), sans chiffres collés aux pseudos."""
 
 
 def _appeler(consigne: str, prompt: str, schema: dict, max_tokens: int = 4000) -> dict:

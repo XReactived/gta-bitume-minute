@@ -41,7 +41,11 @@ montage:
   modele_whisper: small     # tiny / base / small / medium (plus gros = plus précis, plus lent)
   sous_titres: true
   # Streamers qui ont déjà leurs propres sous-titres dans le stream : on n'ajoute pas les nôtres
-  streamers_sans_sous_titres: [anyme023]
+  # (en plus, Claude détecte tout seul les streamers qui ont déjà des sous-titres)
+  streamers_sans_sous_titres: [anyme023, leothecrack]
+  # Mots mal prononcés par la voix : « comme c'est écrit »: « comme ça se dit »
+  prononciation:
+    Leo: Léo
   # Format « top » : intro, puis #3, #2, #1 annoncés par une voix-off avant chaque clip
   voix_off: true
   voix_modele: fr_FR-siwis-medium   # voix française gratuite (Piper)

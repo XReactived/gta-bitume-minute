@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
+from .sous_titres import a_deja_des_sous_titres
 from .voix import dire
 
 L = log("montage")
@@ -176,8 +177,8 @@ def preparer_segment(clip) -> None:
     dossier = DATA / "segments" / clip["id"]
     dossier.mkdir(parents=True, exist_ok=True)
     # Certains streamers ont déjà des sous-titres incrustés dans leur stream : on n'en rajoute pas
-    deja = {x.lower() for x in m.get("streamers_sans_sous_titres") or []}
-    avec_st = m["sous_titres"] and clip["streamer_login"].lower() not in deja
+    avec_st = m["sous_titres"] and not a_deja_des_sous_titres(clip["fichier_brut"], clip["streamer_login"],
+                                                               duree(clip["fichier_brut"]))
     mots = transcrire(clip["fichier_brut"])   # transcription toujours faite : Claude en a besoin
     ass = None
     if mots and avec_st:
