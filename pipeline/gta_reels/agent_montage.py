@@ -233,14 +233,16 @@ def compiler() -> int:
 
 def lancer() -> int:
     conn = db()
+    faites = compiler()  # au cas où des segments attendent déjà
     for clip in conn.execute("SELECT * FROM clips WHERE statut='telecharge' ORDER BY score DESC").fetchall():
         try:
             preparer_segment(clip)
+            faites += compiler()  # une vidéo dès qu'il y a assez de segments, sans attendre la fin du lot
         except Exception as e:
             conn.execute("UPDATE clips SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], clip["id"]))
             conn.commit()
             L.error("Échec du montage %s : %s", clip["id"], e)
-    return compiler()
+    return faites
 
 
 if __name__ == "__main__":

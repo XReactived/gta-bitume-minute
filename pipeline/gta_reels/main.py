@@ -1,9 +1,10 @@
 """Chef d'orchestre : fait tourner les trois agents 24h/24.
 
 - toutes les N minutes : Agent Clips puis Agent Montage
-- à chaque horaire de config.yaml : Agent TikTok publie la meilleure vidéo prête
+- en parallèle, à chaque horaire de config.yaml : Agent TikTok publie la meilleure vidéo prête
 """
 import datetime as dt
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -23,8 +24,26 @@ def creneau_du_moment(cfg: dict) -> str | None:
     return None
 
 
+def boucle_publication() -> None:
+    """Fil séparé : publie aux horaires, même si un long montage est en cours."""
+    while True:
+        try:
+            cfg = config()
+            cle = creneau_du_moment(cfg)
+            if cle:
+                conn = db()
+                if not conn.execute("SELECT 1 FROM creneaux WHERE cle=?", (cle,)).fetchone():
+                    conn.execute("INSERT INTO creneaux (cle) VALUES (?)", (cle,))
+                    conn.commit()
+                    agent_tiktok.lancer()
+        except Exception as e:
+            L.exception("Erreur de publication (on continue) : %s", e)
+        time.sleep(30)
+
+
 def boucle() -> None:
     L.info("Pipeline GTA Reels démarré")
+    threading.Thread(target=boucle_publication, daemon=True, name="publication").start()
     derniere_collecte = 0.0
     while True:
         cfg = config()  # relu à chaque tour : tu peux modifier config.yaml sans redémarrer
@@ -35,14 +54,6 @@ def boucle() -> None:
                 m = agent_montage.lancer()
                 L.info("Passage terminé : %d clips téléchargés, %d vidéos montées", n, m)
                 nettoyage.lancer()
-
-            cle = creneau_du_moment(cfg)
-            if cle:
-                conn = db()
-                if not conn.execute("SELECT 1 FROM creneaux WHERE cle=?", (cle,)).fetchone():
-                    conn.execute("INSERT INTO creneaux (cle) VALUES (?)", (cle,))
-                    conn.commit()
-                    agent_tiktok.lancer()
         except Exception as e:
             L.exception("Erreur dans la boucle (on continue) : %s", e)
         time.sleep(60)

@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS creneaux (cle TEXT PRIMARY KEY);
 
 
 def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DATA / "gta_reels.db")
+    conn = sqlite3.connect(DATA / "gta_reels.db", timeout=60)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn
