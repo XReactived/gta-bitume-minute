@@ -13,6 +13,7 @@ from .notification import notifier
 L = log("tiktok")
 API = "https://open.tiktokapis.com/v2"
 JETON = DATA / "tiktok_token.json"
+DERNIER_STATUT = None
 
 
 def _sauver(j: dict) -> None:
@@ -88,10 +89,13 @@ def publier(video: str, legende: str) -> str:
         })
     r.raise_for_status()
 
-    for _ in range(30):  # TikTok traite la vidéo de son côté
+    global DERNIER_STATUT
+    DERNIER_STATUT = None
+    for _ in range(60):  # TikTok traite la vidéo de son côté (jusqu'à 10 min)
         time.sleep(10)
         etat = _post("/post/publish/status/fetch/", {"publish_id": data["publish_id"]})
         s = etat.get("status")
+        DERNIER_STATUT = s
         if s in ("PUBLISH_COMPLETE", "SEND_TO_USER_INBOX"):
             break
         if s == "FAILED":
@@ -150,7 +154,8 @@ def lancer() -> int | None:
         if mode == "direct":
             notifier("Vidéo publiée sur TikTok", v["hook"], 3, ["tada"])
         else:
-            notifier("Nouvelle vidéo dans tes brouillons TikTok",
+            notifier("Nouvelle vidéo dans tes brouillons TikTok" if DERNIER_STATUT == "SEND_TO_USER_INBOX"
+                     else "Vidéo envoyée, TikTok la traite encore (quelques minutes)",
                      f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
                      4, ["clapper"])
     except Exception as e:
