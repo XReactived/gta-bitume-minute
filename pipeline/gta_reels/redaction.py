@@ -230,7 +230,13 @@ def rediger(clips: list[dict], fmt: str = "top", partie: int = 1, parties: int =
     else:
         out["suite"] = ""
 
-    tags = list(dict.fromkeys(t.get("hashtags_fixes", []) + out["hashtags"]))
+    tags, vus = [], set()  # sans doublons (#gta6 = #GTA6), 5 au maximum
+    for h in t.get("hashtags_fixes", []) + out["hashtags"]:
+        h = "#" + h.strip().lstrip("#").replace(" ", "")
+        if len(h) > 1 and h.lower() not in vus:
+            vus.add(h.lower())
+            tags.append(h)
+    tags = tags[:5]
     credits = " ".join(f"twitch.tv/{c['login']}" for c in {c["login"]: c for c in clips}.values())
     titre = out["legende"]
     if fmt == "serie" and f"{partie}/{parties}" not in titre:
