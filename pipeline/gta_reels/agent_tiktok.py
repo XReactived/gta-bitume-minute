@@ -1,0 +1,139 @@
+"""Agent 3 : publie la meilleure vidéo montée sur TikTok (Content Posting API)."""
+import csv
+import datetime as dt
+import json
+import os
+import time
+
+import requests
+
+from .commun import DATA, config, db, env, log
+
+L = log("tiktok")
+API = "https://open.tiktokapis.com/v2"
+JETON = DATA / "tiktok_token.json"
+
+
+def _sauver(j: dict) -> None:
+    j["expire_le"] = time.time() + int(j.get("expires_in", 0)) - 120
+    JETON.write_text(json.dumps(j), encoding="utf-8")
+    os.chmod(JETON, 0o600)
+
+
+def echanger_code(code: str) -> None:
+    r = requests.post(f"{API}/oauth/token/", data={
+        "client_key": env("TIKTOK_CLIENT_KEY"), "client_secret": env("TIKTOK_CLIENT_SECRET"),
+        "code": code, "grant_type": "authorization_code", "redirect_uri": env("TIKTOK_REDIRECT_URI"),
+    }, timeout=30)
+    r.raise_for_status()
+    j = r.json()
+    if "access_token" not in j:
+        raise RuntimeError(f"TikTok a refusé le code : {j}")
+    _sauver(j)
+
+
+def jeton() -> str:
+    if not JETON.exists():
+        raise RuntimeError("Compte TikTok non relié : lance d'abord  python -m gta_reels.tiktok_auth")
+    j = json.loads(JETON.read_text(encoding="utf-8"))
+    if time.time() < j.get("expire_le", 0):
+        return j["access_token"]
+    r = requests.post(f"{API}/oauth/token/", data={
+        "client_key": env("TIKTOK_CLIENT_KEY"), "client_secret": env("TIKTOK_CLIENT_SECRET"),
+        "grant_type": "refresh_token", "refresh_token": j["refresh_token"],
+    }, timeout=30)
+    r.raise_for_status()
+    nouveau = r.json()
+    if "access_token" not in nouveau:
+        raise RuntimeError(f"Renouvellement TikTok refusé, relie à nouveau le compte : {nouveau}")
+    _sauver(nouveau)
+    return nouveau["access_token"]
+
+
+def _post(chemin: str, corps: dict) -> dict:
+    r = requests.post(
+        f"{API}{chemin}", json=corps, timeout=60,
+        headers={"Authorization": f"Bearer {jeton()}", "Content-Type": "application/json; charset=UTF-8"},
+    )
+    j = r.json()
+    if r.status_code != 200 or j.get("error", {}).get("code") not in (None, "ok"):
+        raise RuntimeError(f"TikTok {chemin} : {j.get('error')}")
+    return j["data"]
+
+
+def publier(video: str, legende: str) -> str:
+    t = config()["tiktok"]
+    taille = os.path.getsize(video)
+    source = {"source": "FILE_UPLOAD", "video_size": taille, "chunk_size": taille, "total_chunk_count": 1}
+
+    if t["mode"] == "direct":
+        info = _post("/post/publish/creator_info/query/", {})
+        options = info.get("privacy_level_options", [])
+        vis = t["visibilite"] if t["visibilite"] in options else "SELF_ONLY"
+        if vis != t["visibilite"]:
+            L.warning("Visibilité %s non autorisée (app pas encore auditée ?) -> %s", t["visibilite"], vis)
+        data = _post("/post/publish/video/init/", {
+            "post_info": {"title": legende, "privacy_level": vis, "disable_duet": False,
+                          "disable_comment": False, "disable_stitch": False, "video_cover_timestamp_ms": 1000},
+            "source_info": source,
+        })
+    else:
+        data = _post("/post/publish/inbox/video/init/", {"source_info": source})
+
+    with open(video, "rb") as f:
+        r = requests.put(data["upload_url"], data=f, timeout=600, headers={
+            "Content-Type": "video/mp4", "Content-Length": str(taille),
+            "Content-Range": f"bytes 0-{taille - 1}/{taille}",
+        })
+    r.raise_for_status()
+
+    for _ in range(30):  # TikTok traite la vidéo de son côté
+        time.sleep(10)
+        etat = _post("/post/publish/status/fetch/", {"publish_id": data["publish_id"]})
+        s = etat.get("status")
+        if s in ("PUBLISH_COMPLETE", "SEND_TO_USER_INBOX"):
+            break
+        if s == "FAILED":
+            raise RuntimeError(f"TikTok a rejeté la vidéo : {etat.get('fail_reason')}")
+    return data["publish_id"]
+
+
+def noter_publication(conn, v, pid: str, mode: str) -> None:
+    """Journal des publications (data/publications.csv), lisible dans Excel."""
+    fichier = DATA / "publications.csv"
+    neuf = not fichier.exists()
+    ids = v["clips"].split(",")
+    streamers = [r["streamer"] for r in conn.execute(
+        f"SELECT streamer FROM clips WHERE id IN ({','.join('?' * len(ids))})", ids)]
+    with open(fichier, "a", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        if neuf:
+            w.writerow(["date", "heure", "video", "mode", "streamers", "hook", "legende", "publish_id"])
+        now = dt.datetime.now()
+        w.writerow([now.date(), now.strftime("%H:%M"), v["id"], mode, ", ".join(streamers),
+                    v["hook"], v["legende"].replace("\n", " "), pid])
+
+
+def lancer() -> int | None:
+    conn = db()
+    v = conn.execute("SELECT * FROM videos WHERE statut='prete' ORDER BY score DESC LIMIT 1").fetchone()
+    if not v:
+        L.warning("Aucune vidéo prête pour ce créneau")
+        return None
+    try:
+        pid = publier(v["fichier"], v["legende"])
+        conn.execute("UPDATE videos SET statut='publiee', publish_id=?, publiee_le=? WHERE id=?",
+                     (pid, dt.datetime.now().isoformat(timespec="seconds"), v["id"]))
+        mode = config()["tiktok"]["mode"]
+        noter_publication(conn, v, pid, mode)
+        L.info("%s : vidéo %d (%s)", "Publiée" if mode == "direct" else "Envoyée dans tes brouillons TikTok",
+               v["id"], v["hook"])
+    except Exception as e:
+        conn.execute("UPDATE videos SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], v["id"]))
+        L.error("Échec de publication vidéo %d : %s", v["id"], e)
+    conn.commit()
+    return v["id"]
+
+
+if __name__ == "__main__":
+    lancer()

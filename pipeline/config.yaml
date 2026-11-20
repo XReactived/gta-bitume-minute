@@ -1,0 +1,50 @@
+# ===== Réglages du pipeline (modifiable sans toucher au code) =====
+
+fuseau_horaire: Europe/Paris
+
+# --- Agent Clips ---
+clips:
+  # Logins Twitch (ce qu'il y a après twitch.tv/). Vérifie-les : le journal
+  # affiche "introuvable" pour un login qui n'existe pas.
+  streamers:
+    - jltomy
+    - michou
+    - anyme023
+    - squeezie
+    - itachie        # à vérifier
+  # Streamers à ne JAMAIS utiliser (ex. : quelqu'un qui a demandé un retrait)
+  exclus: []
+  # Ne garder que les clips joués sur GTA VI (sinon tout le contenu des streamers)
+  seulement_gta6: true
+  # Prendre aussi les meilleurs clips FR de toute la catégorie GTA VI
+  categorie_gta6_fr: true
+  langue: fr
+  fenetre_heures: 48        # ne cherche que les clips des dernières 48 h
+  vues_minimum: 50
+  max_par_passage: 6        # clips téléchargés à chaque passage
+  intervalle_minutes: 60    # fréquence de recherche
+
+# --- Agent Montage ---
+montage:
+  # Durée exacte de chaque vidéo publiée. Un clip Twitch fait 60 s max,
+  # donc l'agent colle plusieurs clips bout à bout puis coupe à cette durée.
+  duree_cible_s: 70
+  modele_whisper: small     # tiny / base / small / medium (plus gros = plus précis, plus lent)
+  sous_titres: true
+  # Format « top » : intro, puis #3, #2, #1 annoncés par une voix-off avant chaque clip
+  voix_off: true
+  voix_modele: fr_FR-siwis-medium   # voix française gratuite (Piper)
+  max_clips: 4                      # clips maximum par vidéo
+  credit: true              # "@streamer sur Twitch" affiché en permanence
+
+# --- Agent TikTok ---
+tiktok:
+  # "brouillon" : la vidéo arrive dans ta boîte TikTok, tu appuies sur Publier.
+  # "direct"    : publication 100 % automatique (exige l'audit de ton app TikTok).
+  mode: brouillon
+  # Tant que l'app n'est pas auditée, TikTok force la visibilité privée.
+  visibilite: PUBLIC_TO_EVERYONE
+  # Une vidéo toutes les 2 h (heure de Paris)
+  horaires: ["12:00", "14:00", "16:00", "18:00", "20:00", "22:00"]
+  hashtags_fixes: ["#gta6", "#gtavi", "#gta"]
+  modele_ia: claude-opus-5-5
