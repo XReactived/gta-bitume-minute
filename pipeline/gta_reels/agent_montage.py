@@ -176,7 +176,7 @@ def assembler(morceaux: list[str], sortie: Path, duree_max: float) -> None:
     n = len(morceaux)
     chaine = "".join(f"[{i}:v][{i}:a]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", chaine,
-           "-map", "[v]", "-map", "[a]", "-t", "600", *ENCODAGE,  # jamais couper un clip : 10 min max (limite TikTok)
+           "-map", "[v]", "-map", "[a]", "-t", "600", *ENCODAGE, "-crf", "23", "-maxrate", "6M", "-bufsize", "12M",  # fichier plus léger = traité plus vite par TikTok ; jamais coupé (10 min max)
            "-movflags", "+faststart", sortie.name]
     subprocess.run(cmd, check=True, cwd=sortie.parent, timeout=1800)
 
