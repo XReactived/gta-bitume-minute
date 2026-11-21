@@ -144,12 +144,26 @@ def trouver_camera(video: str, duree: float) -> tuple[float, float, float, float
         return None
 
 
+def _volume_moyen(video: str) -> float | None:
+    """Volume moyen de la vidéo en dB (vers -91 = silence total), None si on ne peut pas le mesurer."""
+    try:
+        r = subprocess.run(["ffmpeg", "-i", video, "-af", "volumedetect", "-vn", "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=300)
+        ligne = next(x for x in r.stderr.splitlines() if "mean_volume" in x)
+        return float(ligne.split("mean_volume:")[1].split("dB")[0])
+    except Exception:
+        return None
+
+
 def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str, redac: dict) -> tuple[bool, list[str]]:
     """Renvoie (ok, problèmes)."""
     durees = [_duree(m) for m in morceaux]
     total, reel = sum(durees), _duree(str(sortie))
     if abs(reel - total) > 1.5:
         return False, [f"vidéo finale de {reel:.0f} s au lieu de {total:.0f} s : un morceau manque ou est coupé"]
+    son = _volume_moyen(str(sortie))
+    if son is not None and son < -55:
+        return False, [f"vidéo muette (volume moyen {son:.0f} dB) : le son du clip est absent"]
 
     instants, t = [], 0.0
     if len(morceaux) == 1:  # vidéo déjà finie (contrôle du stock) : une image toutes les quelques secondes
