@@ -188,7 +188,8 @@ CONSIGNE_TEXTES = """Ton travail : écrire les textes d'une vidéo dont le forma
 Pour les autres formats que duel et devine, « question » peut être une question qui fait réagir en commentaire (ou vide), et « pause_s » vaut 0.
 Les textes sont posés directement sur les clips qui jouent déjà (pas d'écran d'attente) : la voix-off parle par-dessus le jeu, donc phrases très courtes. Le hook doit accrocher dans la première seconde.
 Suspense : le hook et l'intro créent de l'attente sans rien révéler (« attends la fin », « personne ne s'attendait à ça », une question…). Varie les formulations : jamais deux fois la même accroche.
-Ne réutilise pas un hook ou une légende déjà publiés récemment (liste fournie)."""
+Ne réutilise pas un hook ou une légende déjà publiés récemment (liste fournie).
+Véracité : n'affirme que ce que la transcription ou le titre du clip disent clairement. N'invente aucun élément (animal, arrestation, avis du streamer, objet…) : si tu n'es pas sûr de ce qui se passe, reste intrigant sans être précis (« il ne s'attendait pas à ça », « regarde jusqu'au bout »). Un titre de clip en anglais ou une blague du streamer n'est pas une description fiable de l'image."""
 
 
 def _textes_par_defaut(clips, fmt, partie, parties) -> dict:

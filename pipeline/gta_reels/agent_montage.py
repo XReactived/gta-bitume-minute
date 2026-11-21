@@ -559,7 +559,7 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
             etiquettes.append({"c_devine": "Carte « que va-t-il se passer ? »",
                                "apres": "Suite du clip (réponse)", "c_suite": "Carte « la suite dans la partie suivante »",
                                "c_question": "Carte question finale"}.get(nom, nom))
-    ok, problemes = verifier(sortie, morceaux, etiquettes, fmt, redac)
+    ok, problemes = verifier(sortie, morceaux, etiquettes, fmt, redac if voix else dict(redac, sans_voix=True))
     statut = "prete" if ok else "rejetee"
     if not ok:
         L.warning("Vidéo refusée par le contrôle qualité : %s", " | ".join(problemes))

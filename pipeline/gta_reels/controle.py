@@ -170,14 +170,24 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
         n = 12
         instants = [reel * (i + 0.5) / n for i in range(n)]
         etiquettes, durees = [f"Image à {x:.0f} s" for x in instants], [reel / n] * n
-    for e, d in ([] if instants else zip(etiquettes, durees)):
-        # un clip avec un texte posé au début : image prise pendant que le texte est affiché
-        instants.append(t + (min(1.2, d * 0.5) if "texte posé" in e else d * 0.5))
-        t += d
+    if not instants:
+        # plusieurs images par clip (une toutes les ~6 s, 4 au plus) pour juger ce qui se passe vraiment
+        e2, d2 = [], []
+        for e, d in zip(etiquettes, durees):
+            k = max(1, min(4, round(d / 6)))
+            for j in range(k):
+                debut_img = min(1.2, d * 0.5) if j == 0 and "texte posé" in e else d * (j + 0.5) / k
+                instants.append(t + debut_img)
+                e2.append(e if k == 1 else f"{e} [image {j + 1}/{k}]")
+                d2.append(d / k)
+            t += d
+        etiquettes, durees = e2, d2
     instants = instants[:24]
     deroule = "\n".join(f"Image {i + 1} — {e} ({d:.0f} s)" for i, (e, d) in enumerate(zip(etiquettes, durees)))
-    textes = (f"Format : {fmt}\nTitre à l'écran : {redac.get('hook')}\nVoix-off d'intro : {redac.get('intro')}\n"
-              f"Annonces lues : {json.dumps(redac.get('annonces'), ensure_ascii=False)}\n"
+    voix = ("Voix-off : aucune (clip brut avec le vrai son du streamer)\n" if redac.get("sans_voix") else
+            f"Voix-off d'intro : {redac.get('intro')}\n"
+            f"Annonces lues : {json.dumps(redac.get('annonces'), ensure_ascii=False)}\n")
+    textes = (f"Format : {fmt}\nTitre à l'écran : {redac.get('hook')}\n{voix}"
               f"Question : {redac.get('question') or '(aucune)'}\nSuite : {redac.get('suite') or '(aucune)'}\n"
               f"Légende TikTok : {redac.get('legende_complete')}")
     try:
@@ -195,16 +205,22 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
                     f"morceau de la vidéo (au début du morceau quand un texte y est posé, sinon au milieu). "
                     f"Mise en page voulue : image verticale plein écran, soit la webcam du streamer en haut et le jeu "
                     f"en dessous, soit le jeu recadré au centre sur fond flou :\n{deroule}\n\nTextes de la vidéo :\n{textes}\n\n"
-                    "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) et le "
-                    "petit texte jaune en dessous donne le numéro et le streamer de ce clip ; ce n'est pas une "
-                    "erreur si le titre parle de la vidéo entière. "
+                    "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) ; dans "
+                    "un top ou un duel, un petit texte jaune en dessous donne le numéro et le streamer (pas sur un "
+                    "clip solo). Ce n'est pas une erreur si le titre parle de la vidéo entière. "
+                    "Tu ne vois que quelques images et tu n'entends pas le son : ne signale PAS une promesse "
+                    "simplement parce que les images ne la montrent pas (elle peut se passer entre deux images ou "
+                    "dans ce qui est dit) ; signale-la seulement si les images la contredisent clairement, ou si "
+                    "le texte invente un élément précis absent du titre du clip. Les éléments du stream lui-même "
+                    "(chat Twitch, interface du jeu, encarts du jeu coupés par le recadrage) ne sont pas des "
+                    "problèmes. "
                     "Vérifie que tout est cohérent : le nombre de clips annoncé (« les deux meilleurs moments »…) "
                     "correspond au nombre de clips réellement présents ; les numéros d'un top vont bien en compte à "
                     "rebours jusqu'au numéro 1 ; chaque annonce nomme le bon streamer ; le titre, l'intro et la légende "
                     "ne promettent rien que la vidéo ne montre pas ; aucun texte n'est coupé, illisible ou hors de "
                     "l'écran ; pas de sous-titres en double sur un même clip (nos sous-titres jaunes + ceux du "
                     "streamer) ; pas d'image noire ou figée à la place d'un clip ; " + REGLES_TIKTOK + " "
-                    "ok = true seulement si tu ne vois aucun problème réel. Liste chaque problème en une phrase courte.")},
+                    "ok = true sauf si tu vois un problème réel et grave pour le spectateur. Liste chaque problème en une phrase courte.")},
             ]}],
         )
         r = json.loads(next(b.text for b in rep.content if b.type == "text"))
