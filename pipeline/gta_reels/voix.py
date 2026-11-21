@@ -48,7 +48,8 @@ def prononcer(texte: str) -> str:
 CONSIGNE_VOIX = ("Style coach sportif survolté : voix masculine française de France, très énergique, motivante "
                  "et punchy, qui donne envie de rester jusqu'au bout. Phrases lancées avec élan, accents forts sur "
                  "les mots clés, enthousiasme sincère, rythme rapide. Prononce les pseudos de streamers à la "
-                 "française (Leo se dit Léo).")
+                 "française : Leo se dit Léo, LeoTheCrack se dit Léo ze crack, Squeezie se dit Squizi, Anyme023 se dit "
+                 "Anime, Twitch se dit Touitch.")
 
 
 def _dire_openai(texte: str, sortie: Path) -> float:

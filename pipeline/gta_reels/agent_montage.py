@@ -171,7 +171,7 @@ ENCODAGE = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "30", "-
 
 def _lignes(texte: str, largeur: int) -> list[str]:
     import textwrap
-    return textwrap.wrap(texte, largeur)[:4]
+    return textwrap.wrap(texte, largeur, break_long_words=False, break_on_hyphens=False)[:4]  # jamais un mot coupé
 
 
 def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path | None, duree_voix: float | None,
