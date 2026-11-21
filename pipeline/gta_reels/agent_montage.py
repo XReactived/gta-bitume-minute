@@ -76,6 +76,9 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         "Style: Def,DejaVu Sans,84,&H00FFFFFF,&H00000000,&H96000000,1,1,7,3,2,50,50,520\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
+    def propre(m: str) -> str:
+        return m.upper().replace("{", "").replace("}", "").replace("\\", "")
+
     lignes, blocs, bloc = [], [], []
     for w in recoller(mots):  # blocs de 3 mots max, coupés aux pauses et aux mots incertains
         if not w.get("sur", True):
@@ -83,15 +86,13 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
                 blocs.append(bloc)
             bloc = []
             continue
-        if bloc and (len(bloc) == 3 or w["t0"] - bloc[-1]["t1"] > 0.6):
+        trop_large = bloc and _largeur(" ".join(propre(x["mot"]) for x in bloc + [w]), 84 * 1.12) > 900
+        if bloc and (len(bloc) == 3 or trop_large or w["t0"] - bloc[-1]["t1"] > 0.6):
             blocs.append(bloc)
             bloc = []
         bloc.append(w)
     if bloc:
         blocs.append(bloc)
-
-    def propre(m: str) -> str:
-        return m.upper().replace("{", "").replace("}", "").replace("\\", "")
 
     for k, bloc in enumerate(blocs):
         fin_bloc = bloc[-1]["t1"]
@@ -106,6 +107,9 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
             texte = " ".join(
                 ("{\\c&H00E5FF&\\fscx112\\fscy112}" + propre(x["mot"]) + "{\\r}") if x is w else propre(x["mot"])
                 for x in bloc)
+            large = _largeur(" ".join(propre(x["mot"]) for x in bloc), 84 * 1.12)
+            if large > 900:  # un seul mot très long : on le rapetisse pour qu'il tienne dans l'écran
+                texte = f"{{\\fs{int(84 * 900 / large)}}}" + texte
             lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
     chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
 
@@ -267,6 +271,32 @@ ENCODAGE = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "30", "-
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"]
 
 
+def _largeur(texte: str, taille: float) -> float:
+    """Largeur approximative en pixels d'un texte en DejaVu Sans Bold (majuscules), pour ne jamais déborder."""
+    l = 0.0
+    for c in texte:
+        l += 1.05 if c in "MWÆŒ" else 0.42 if c in " .,'’!:;|Iil-" else 0.8
+    return l * taille
+
+
+def _lignes_px(texte: str, taille: int, max_px: int = 900) -> tuple[list[str], int]:
+    """Découpe en lignes qui tiennent dans max_px ; réduit la taille si un mot seul est trop large."""
+    mots, lignes, cour = texte.split(), [], ""
+    for m in mots:
+        essai = f"{cour} {m}".strip()
+        if cour and _largeur(essai, taille) > max_px:
+            lignes.append(cour)
+            cour = m
+        else:
+            cour = essai
+    if cour:
+        lignes.append(cour)
+    plus_large = max((_largeur(x, taille) for x in lignes), default=0)
+    if plus_large > max_px:
+        taille = int(taille * max_px / plus_large)
+    return lignes, taille
+
+
 def _lignes(texte: str, largeur: int) -> list[str]:
     import textwrap
     return textwrap.wrap(texte, largeur, break_long_words=False, break_on_hyphens=False)[:4]  # jamais un mot coupé
@@ -320,8 +350,8 @@ def habiller(segment: str, sortie: Path, gros: str | None, petit: str | None, vo
     y = HAUT_CAM + 30
     if gros:
         court = len(gros) <= 4  # « #3 », « 1/2 »…
-        taille = 190 if court else 86
-        for i, ligne in enumerate(_lignes(gros, 7 if court else 16)[:3]):
+        lignes, taille = _lignes_px(gros, 190 if court else 86, 880)  # marge pour le fond et le contour
+        for i, ligne in enumerate(lignes[:3]):
             f = travail / f"{sortie.stem}_l{i}.txt"
             f.write_text(ligne, encoding="utf-8")
             filtres.append(f"drawtext=fontfile={FONT}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
