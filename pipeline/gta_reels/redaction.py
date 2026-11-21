@@ -61,7 +61,7 @@ SCHEMA_PLAN = {
 }
 
 CONSIGNE_PLAN = """Ton travail : décider quelles vidéos fabriquer avec les clips disponibles. Choisis le format qui sert le mieux chaque moment :
-- « solo » : un seul clip, quand il se suffit à lui-même (un moment énorme, une histoire complète). Durée = celle du clip.
+- « solo » : un seul clip, quand il se suffit à lui-même (un moment énorme, une histoire complète). Durée = celle du clip. Seulement pour un clip noté 7/10 ou plus : un clip noté 6 va dans un top, un duel ou une rafale, jamais seul.
 - « top » : 2 à 5 clips sur un même thème (accidents, braquages, fous rires…), en compte à rebours, le meilleur en dernier.
 - « serie » : 2 ou 3 parties publiées à la suite, quand plusieurs clips racontent une même histoire ou une même session d'un streamer et que tout mettre dans une vidéo serait trop long. Chaque partie doit tenir seule et donner envie de voir la suivante.
 - « duel » : exactement 2 clips de 2 streamers différents qui vivent une situation comparable (deux crashs, deux courses-poursuites, deux ratés…). La vidéo finit sur une question au public (« qui a fait le pire ? ») : idéal pour faire réagir en commentaires.
@@ -122,6 +122,8 @@ def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
         nb = len(parties[0])
         if fmt in ("solo", "devine") and nb > 1:
             fmt = "top"
+        if nb == 1 and (connus[parties[0][0]]["score"] or 0) < float(config()["montage"].get("note_solo", 7)):
+            continue  # un clip moyen ne part jamais seul : il attend d'être regroupé dans un top ou une rafale
         if fmt == "duel" and nb != 2:
             fmt = "top" if nb > 1 else "solo"
         if fmt in ("rafale", "recap", "top") and nb == 1:

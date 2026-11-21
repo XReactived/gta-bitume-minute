@@ -15,6 +15,30 @@ L = log("recadrage")
 _visages = None
 
 
+def _images(video: str, debut: float, fin: float, pas: float):
+    """Images du clip entre debut et fin, une tous les « pas » secondes, lues dans l'ordre (bien plus rapide que
+    de sauter d'image en image). Donne (temps, image)."""
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        return
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    cap.set(cv2.CAP_PROP_POS_MSEC, debut * 1000)
+    n0 = int(round(debut * fps))
+    i, prochain = 0, debut
+    while True:
+        t = (n0 + i) / fps
+        if t >= fin or not cap.grab():
+            break
+        if t + 0.5 / fps >= prochain:
+            ok, img = cap.retrieve()
+            if not ok:
+                break
+            yield t, img
+            prochain += pas
+        i += 1
+    cap.release()
+
+
 def _detecteur():
     global _visages
     if _visages is None:
@@ -35,14 +59,10 @@ def suivre(video: str, debut: float, fin: float | None, largeur_cadre: float,
     fin = min(fin or total, total) if total else fin
     if not fin or fin - debut < 2:
         return None
+    cap.release()
     pas = 0.25  # 4 images par seconde
     cibles, prec = [], None
-    t = debut
-    while t < fin:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-        ok, img = cap.read()
-        if not ok:
-            break
+    for t, img in _images(video, debut, fin, pas):
         h0, w0 = img.shape[:2]
         petit = cv2.resize(img, (320, int(320 * h0 / w0)))
         gris = cv2.cvtColor(petit, cv2.COLOR_BGR2GRAY)
@@ -65,8 +85,6 @@ def suivre(video: str, debut: float, fin: float | None, largeur_cadre: float,
                 cible = float((colonnes * np.arange(W)).sum() / colonnes.sum()) / W
         prec = gris
         cibles.append((t - debut, cible))
-        t += pas
-    cap.release()
     if len(cibles) < 8:
         return None
 
@@ -108,15 +126,10 @@ def temps_morts(video: str, debut: float, fin: float, mots: list[dict],
     """Repère au milieu du clip les passages où l'image du jeu est figée (menu pause, chargement, carte)
     ET où personne ne parle. Renvoie les morceaux à retirer (temps depuis debut), du plus tôt au plus tard.
     Prudent : on ne retire que des passages d'au moins duree_min secondes, en laissant 0,4 s de chaque côté."""
-    cap = cv2.VideoCapture(video)
-    if not cap.isOpened() or fin - debut < 8:
+    if fin - debut < 8:
         return []
-    pas, t, prec, figees = 0.25, debut, None, []
-    while t < fin:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-        ok, img = cap.read()
-        if not ok:
-            break
+    pas, prec, figees = 0.25, None, []
+    for t, img in _images(video, debut, fin, pas):
         h0, w0 = img.shape[:2]
         gris = cv2.cvtColor(cv2.resize(img, (320, int(320 * h0 / w0))), cv2.COLOR_BGR2GRAY)
         H, W = gris.shape
@@ -127,8 +140,6 @@ def temps_morts(video: str, debut: float, fin: float, mots: list[dict],
             _, diff = cv2.threshold(cv2.absdiff(gris, prec), 18, 255, cv2.THRESH_BINARY)
             figees.append((t - debut, diff.sum() / (255 * H * W) < 0.002))
         prec = gris
-        t += pas
-    cap.release()
     parole = [(w["t0"] - 0.3, w["t1"] + 0.3) for w in mots]  # temps déjà comptés depuis debut
     morceaux, depart = [], None
     for i, (tt, fige) in enumerate(figees + [(fin - debut, False)]):

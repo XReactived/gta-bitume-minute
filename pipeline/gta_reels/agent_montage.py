@@ -261,7 +261,8 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", *entrees,
         "-filter_complex", ";".join(filtres), "-map", f"[{courant}]", "-map", audio, "-shortest",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "30", "-pix_fmt", "yuv420p",
+        # « veryfast » : 3 à 4 fois plus rapide sur notre petit serveur ; qualité compensée par un crf un peu plus bas
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-r", "30", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", sortie.name,
     ]
     subprocess.run(cmd, check=True, cwd=travail, timeout=900)
