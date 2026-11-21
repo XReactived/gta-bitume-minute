@@ -30,7 +30,7 @@ def _mosaique(video: str, duree: float) -> bytes:
     with tempfile.TemporaryDirectory() as d:
         for i, p in enumerate((0.2, 0.4, 0.6, 0.8)):
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{duree * p:.2f}", "-i", video,
-                            "-frames:v", "1", "-vf", "scale=640:-2", f"{d}/{i}.jpg"], check=True, timeout=60)
+                            "-frames:v", "1", "-vf", "scale=960:-2", f"{d}/{i}.jpg"], check=True, timeout=60)
         sortie = Path(d) / "m.jpg"
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", f"{d}/%d.jpg", "-vf", "tile=2x2",
                         "-frames:v", "1", "-q:v", "4", str(sortie)], check=True, timeout=60)
@@ -50,7 +50,7 @@ def _demander_a_claude(image: bytes) -> bool:
             {"type": "text", "text": (
                 "Voici 4 images d'un même clip de stream Twitch (GTA). Le streamer affiche-t-il des sous-titres "
                 "de sa propre parole incrustés dans l'image (texte qui transcrit ce qu'il dit, souvent en bas ou "
-                "au milieu, qui change d'une image à l'autre) ? Ne compte PAS l'interface du jeu, le chat, "
+                "au milieu, qui change d'une image à l'autre, parfois en petit avec un mot surligné) ? Ne compte PAS l'interface du jeu, le chat, "
                 "les alertes, les noms de joueurs ni les sous-titres des dialogues du jeu.")},
         ]}],
     )

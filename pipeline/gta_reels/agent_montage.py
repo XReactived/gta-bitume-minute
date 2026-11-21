@@ -49,6 +49,24 @@ def _ts(s: float) -> str:
     return f"{int(h)}:{int(m):02d}:{s:05.2f}"
 
 
+def recoller(mots: list[dict]) -> list[dict]:
+    """Recolle ce que Whisper découpe : « quelqu » + « 'un » -> « quelqu'un », « est » + « -ce », ponctuation seule."""
+    res = []
+    for w in mots:
+        m = (w.get("mot") or "").strip()
+        if not m:
+            continue
+        colle = res and (m[0] in "'’-" or res[-1]["mot"][-1:] in "'’" or all(c in ".,!?…;:" for c in m))
+        if colle:
+            prec = res[-1]
+            espace = "\u00a0" if m[0] in "!?:;" else ""  # typographie française : « fou ! »
+            res[-1] = dict(prec, mot=prec["mot"] + espace + m, t1=max(prec["t1"], w["t1"]),
+                           sur=prec.get("sur", True) and (w.get("sur", True) or not any(c.isalnum() for c in m)))
+        else:
+            res.append(dict(w, mot=m))
+    return res
+
+
 def ecrire_ass(mots: list[dict], chemin: Path) -> None:
     """Sous-titres façon TikTok, mot par mot : 3 mots à l'écran, le mot prononcé en jaune et un peu plus gros."""
     entete = (
@@ -59,7 +77,7 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
     lignes, blocs, bloc = [], [], []
-    for w in mots:  # blocs de 3 mots max, coupés aux pauses et aux mots incertains
+    for w in recoller(mots):  # blocs de 3 mots max, coupés aux pauses et aux mots incertains
         if not w.get("sur", True):
             if bloc:
                 blocs.append(bloc)
@@ -95,7 +113,7 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
 def phrases(mots: list[dict], max_mots: int = 7) -> list[dict]:
     """Regroupe les mots sûrs en phrases courtes (coupées aux pauses et à la ponctuation)."""
     res, cur = [], []
-    for w in mots:
+    for w in recoller(mots):
         if not w.get("sur", True):
             if cur:
                 res.append(cur)

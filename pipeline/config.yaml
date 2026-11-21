@@ -52,7 +52,7 @@ montage:
   sous_titres: true
   # Streamers qui ont déjà leurs propres sous-titres dans le stream : on n'ajoute pas les nôtres
   # (en plus, Claude détecte tout seul les streamers qui ont déjà des sous-titres)
-  streamers_sans_sous_titres: [anyme023, leothecrack]
+  streamers_sans_sous_titres: [anyme023, leothecrack, wankilstudio]
   # Mots mal prononcés par la voix : « comme c'est écrit »: « comme ça se dit »
   prononciation:
     Leo: Léo
