@@ -65,6 +65,7 @@ montage:
   voix_modele: fr_FR-siwis-medium   # voix gratuite de secours (Piper)
   credit: true              # "@streamer sur Twitch" affiché en permanence
   camera_en_haut: true      # webcam du streamer en haut, jeu en grand dessous (repérée par Claude)
+  cadrage_suivi: true       # le cadre vertical suit le visage ou l'action (opencv)
 
 # --- Agent TikTok ---
 tiktok:

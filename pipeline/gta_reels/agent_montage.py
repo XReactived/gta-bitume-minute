@@ -8,6 +8,7 @@ from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres, traduire
 from .controle import juger_clip, trouver_camera, verifier
+from .recadrage import expression, suivre
 from .voix import dire
 
 L = log("montage")
@@ -156,6 +157,8 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
     - sans caméra : le jeu recadré en grand au centre, fond flou derrière.
     debut/fin : partie du clip à garder (temps morts retirés)."""
     travail = sortie.parent
+    suivi = config()["montage"].get("cadrage_suivi", True)
+    couleurs = "eq=contrast=1.06:saturation=1.2"  # image qui claque un peu plus sur un téléphone
     if camera:
         x, y, l, h = camera
         bas = 1920 - HAUT_CAM
@@ -167,20 +170,28 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
         elif x < x0 + lj and x + l / 2 > 0.5:   # webcam à droite
             x0 = max(x - lj, x0 - 0.15)
         decalage = min(max(x0 / (1 - lj), 0.0), 1.0)
+        reperes = suivre(source, debut, fin, lj, camera) if suivi else None
+        if reperes:  # le cadre qui suit l'action évite quand même la webcam (déjà affichée en haut)
+            pmin = (x + l) / (1 - lj) if x + l / 2 < 0.5 and x + l <= 1 - lj else 0.0
+            pmax = (x - lj) / (1 - lj) if x + l / 2 > 0.5 and x >= lj else 1.0
+            reperes = [(t, min(max(v, pmin), pmax)) for t, v in reperes]
+        pos_x = f"(iw-ow)*({expression(reperes)})" if reperes else f"(iw-ow)*{decalage:.4f}"
         filtres = [
             "[0:v]split[s1][s2]",
             f"[s1]crop=iw*{l:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
             f"scale=1080:{HAUT_CAM}:force_original_aspect_ratio=increase,crop=1080:{HAUT_CAM},setsar=1[cam]",
-            f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:(iw-ow)*{decalage:.4f}:0,scale=1080:{bas},setsar=1[jeu]",
-            "[cam][jeu]vstack,setsar=1[v0]",
+            f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:{pos_x}:0,scale=1080:{bas},setsar=1[jeu]",
+            f"[cam][jeu]vstack,{couleurs},setsar=1[v0]",
         ]
     else:
+        reperes = suivre(source, debut, fin, 0.8 * 9 / 16) if suivi else None
+        pos_x = f"(iw-ow)*({expression(reperes)})" if reperes else "(iw-ow)/2"
         filtres = [
             "[0:v]split[s1][s2]",
             "[s1]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,"
             "eq=brightness=-0.2[fond]",
-            "[s2]crop=min(iw\\,ih*0.8):ih,scale=1080:1350,setsar=1[jeu]",
-            "[fond][jeu]overlay=0:285,setsar=1[v0]",
+            f"[s2]crop=min(iw\\,ih*0.8):ih:{pos_x}:0,scale=1080:1350,setsar=1[jeu]",
+            f"[fond][jeu]overlay=0:285,{couleurs},setsar=1[v0]",
         ]
     courant = "v0"
     if ass:
