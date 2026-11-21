@@ -626,7 +626,9 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     graphe += (f";[{v}]noise=alls=5:allf=t,drawtext=fontfile={FONT}:text='Bitume Minute':fontsize=34:"
                f"fontcolor=white@0.55:x=(w-text_w)/2:y=h-{70 if paysage else 150}[vfin]")
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", graphe,
-                    "-map", "[vfin]", "-map", "[a]", *ENCODAGE, "-movflags", "+faststart", sortie.name],
+                    "-map", "[vfin]", "-map", "[a]",
+                    # qualité plus haute que les clips : TikTok recompresse, il faut lui donner un maximum de détails
+                    *[("17" if x == "20" else x) for x in ENCODAGE], "-maxrate", "16M", "-bufsize", "24M", "-movflags", "+faststart", sortie.name],
                    check=True, cwd=dossier, timeout=900)
 
     tags, vus = [], set()
