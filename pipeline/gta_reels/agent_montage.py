@@ -475,7 +475,9 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
     dossier = DATA / "final" / ("-".join(ids)[:70] + (f"-p{partie}" if serie else ""))
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
-    voix = m.get("voix_off", True)
+    # les clips de streamers buzzent sans narration (clip brut + titre + sous-titres) : la voix-off est
+    # réservée aux formats qui ont besoin d'un fil conducteur (tops, récaps, séries…)
+    voix = m.get("voix_off", True) and fmt in (m.get("voix_formats") or ["top", "recap", "serie", "duel", "devine", "astuce"])
 
     def voix_off(texte: str, nom: str):
         f = dossier / f"{nom}.wav"
