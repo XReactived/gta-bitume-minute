@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import os
 import time
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -164,10 +165,17 @@ def lancer() -> int | None:
     except Exception as e:
         if "spam_risk" in str(e) or "too_many_pending" in str(e):
             # trop de brouillons pas encore publiés : la vidéo reste en stock et repartira au prochain créneau
-            L.error("TikTok refuse : trop de brouillons en attente dans ta boîte de réception")
+            # TikTok accepte 5 envois en attente par 24 h : supprimer un brouillon ne libère pas la place,
+            # elle se libère 24 h après l'envoi. On calcule l'heure où ça se débloque.
+            envois = [r[0] for r in conn.execute(
+                "SELECT publiee_le FROM videos WHERE publiee_le >= ? ORDER BY publiee_le",
+                ((dt.datetime.now() - dt.timedelta(hours=24)).isoformat(timespec="seconds"),))]
+            libre = (f" La place se libère vers {(dt.datetime.fromisoformat(envois[0]) + dt.timedelta(hours=24)).astimezone(ZoneInfo('Europe/Paris')):%H:%M} "
+                     "(24 h après le plus ancien envoi)." if envois else "")
+            L.error("TikTok refuse : trop d'envois en attente (5 par 24 h)%s", libre)
             notifier("Brouillons TikTok pleins",
-                     "TikTok refuse les nouvelles vidéos : publie ou supprime les brouillons en attente dans ta "
-                     "boîte de réception TikTok. La vidéo repartira au prochain créneau.", 5, ["warning"])
+                     "TikTok n'accepte que 5 vidéos en attente par 24 h, et supprimer un brouillon ne libère pas la "
+                     f"place.{libre} La vidéo reste en stock et repartira à un prochain créneau.", 5, ["warning"])
             conn.commit()
             publier_youtube(v)  # YouTube n'a pas cette limite : la vidéo y part quand même
             return v["id"]
