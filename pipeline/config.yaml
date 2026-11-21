@@ -106,3 +106,11 @@ youtube:
   actif: true
   visibilite: public        # public, unlisted (non répertoriée) ou private
   description_fin: "Les meilleurs moments de streamers sur GTA 6. Clips issus de Twitch, crédit au streamer dans la vidéo. Page fan non affiliée à Rockstar Games."
+
+# --- Edits GTA 6 ---
+# Un « edit » stylé par jour : les plus beaux plans de jeu (sans webcam), coupes rapides, gros mots façon affiche.
+# Pas de voix : tu ajoutes un son tendance dans TikTok au moment de publier (la notification te dit lequel).
+edits:
+  actif: true
+  par_jour: 1
+  duree_s: 18

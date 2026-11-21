@@ -46,3 +46,8 @@ def lancer() -> None:
             _suppr(d); n += 1
     if n:
         L.info("Ménage : %d fichiers ou dossiers supprimés", n)
+    try:  # plans mis de côté pour les edits et jamais utilisés : supprimés au bout de 3 jours
+        from .edits import nettoyer
+        nettoyer()
+    except Exception as e:
+        L.warning("Ménage des plans d'edit impossible : %s", e)

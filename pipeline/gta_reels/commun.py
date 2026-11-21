@@ -81,7 +81,7 @@ def db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     for col, typ in (("format", "TEXT"), ("serie", "TEXT"), ("partie", "INTEGER"), ("parties", "INTEGER"), ("duree", "REAL"),
-                     ("youtube_id", "TEXT")):
+                     ("youtube_id", "TEXT"), ("conseil", "TEXT")):
         try:  # mise à niveau d'une base existante
             conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {typ}")
         except sqlite3.OperationalError:

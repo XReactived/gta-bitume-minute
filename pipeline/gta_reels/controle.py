@@ -205,7 +205,11 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
                     f"morceau de la vidéo (au début du morceau quand un texte y est posé, sinon au milieu). "
                     f"Mise en page voulue : image verticale plein écran, soit la webcam du streamer en haut et le jeu "
                     f"en dessous, soit le jeu recadré au centre sur fond flou :\n{deroule}\n\nTextes de la vidéo :\n{textes}\n\n"
-                    "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) ; dans "
+                    + ("C'est un « edit » : enchaînement voulu de plans de jeu courts (sans webcam ni sous-titres), "
+                       "avec de gros mots façon affiche et quelques flashs blancs aux coupes ; le son sera ajouté "
+                       "dans TikTok. Vérifie surtout que les textes sont lisibles, sans faute, et que les images "
+                       "sont belles (pas de menu, d'écran noir ou d'interface de stream). " if fmt == "edit" else "")
+                    + "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) ; dans "
                     "un top ou un duel, un petit texte jaune en dessous donne le numéro et le streamer (pas sur un "
                     "clip solo). Ce n'est pas une erreur si le titre parle de la vidéo entière. "
                     "Tu ne vois que quelques images et tu n'entends pas le son : ne signale PAS une promesse "

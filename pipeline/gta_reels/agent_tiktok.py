@@ -158,7 +158,9 @@ def lancer() -> int | None:
         else:
             notifier("Nouvelle vidéo dans tes brouillons TikTok" if DERNIER_STATUT == "SEND_TO_USER_INBOX"
                      else "Vidéo envoyée, TikTok la traite encore (quelques minutes)",
-                     f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
+                     (f"EDIT : ajoute un son tendance ({v['conseil'] or 'phonk ou son du moment'}) et mets le son "
+                      "d'origine à 0 avant de publier.\n\n" if v["format"] == "edit" else "")
+                     + f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
                      4, ["clapper"])
         conn.commit()  # avant YouTube, qui écrit dans la base avec sa propre connexion
         publier_youtube(v)

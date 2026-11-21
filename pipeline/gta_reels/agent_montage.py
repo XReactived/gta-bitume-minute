@@ -13,6 +13,11 @@ from .voix import dire
 
 L = log("montage")
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Police des titres et sous-titres : Anton (haute et serrée, style « affiche » des edits TikTok), libre (OFL)
+POLICES = Path(__file__).parent / "polices"
+ANTON = POLICES / "Anton-Regular.ttf"
+TITRE = str(ANTON) if ANTON.exists() else FONT
+NOM_ST, TAILLE_ST, GRAS_ST = ("Anton", 140, 0) if ANTON.exists() else ("DejaVu Sans", 84, 1)
 _whisper = None
 
 
@@ -73,7 +78,7 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        "Style: Def,DejaVu Sans,84,&H00FFFFFF,&H00000000,&H96000000,1,1,7,3,2,50,50,520\n\n"
+        f"Style: Def,{NOM_ST},{TAILLE_ST},&H00FFFFFF,&H00000000,&H96000000,{GRAS_ST},1,7,3,2,50,50,520\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
     def propre(m: str) -> str:
@@ -86,7 +91,7 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
                 blocs.append(bloc)
             bloc = []
             continue
-        trop_large = bloc and _largeur(" ".join(propre(x["mot"]) for x in bloc + [w]), 84 * 1.12) > 900
+        trop_large = bloc and _largeur(" ".join(propre(x["mot"]) for x in bloc + [w]), TAILLE_ST * 1.12) > 900
         if bloc and (len(bloc) == 3 or trop_large or w["t0"] - bloc[-1]["t1"] > 0.6):
             blocs.append(bloc)
             bloc = []
@@ -107,9 +112,9 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
             texte = " ".join(
                 ("{\\c&H00E5FF&\\fscx112\\fscy112}" + propre(x["mot"]) + "{\\r}") if x is w else propre(x["mot"])
                 for x in bloc)
-            large = _largeur(" ".join(propre(x["mot"]) for x in bloc), 84 * 1.12)
+            large = _largeur(" ".join(propre(x["mot"]) for x in bloc), TAILLE_ST * 1.12)
             if large > 900:  # un seul mot très long : on le rapetisse pour qu'il tienne dans l'écran
-                texte = f"{{\\fs{int(84 * 900 / large)}}}" + texte
+                texte = f"{{\\fs{int(TAILLE_ST * 900 / large)}}}" + texte
             lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
     chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
 
@@ -141,7 +146,7 @@ def ecrire_ass_phrases(blocs: list[dict], chemin: Path) -> None:
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-        "Style: Def,DejaVu Sans,66,&H00FFFFFF,&H00000000,&H96000000,1,1,6,3,2,70,70,520\n\n"
+        f"Style: Def,{NOM_ST},{TAILLE_ST * 66 // 84},&H00FFFFFF,&H00000000,&H96000000,{GRAS_ST},1,6,3,2,70,70,520\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Text\n"
     )
     lignes = []
@@ -240,7 +245,7 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
         ]
     courant = "v0"
     if ass:
-        filtres.append(f"[{courant}]subtitles={ass.name}[v1]")
+        filtres.append(f"[{courant}]subtitles={ass.name}" + (f":fontsdir={POLICES}" if ANTON.exists() else "") + "[v1]")
         courant = "v1"
     if credit:
         (travail / "credit.txt").write_text(credit, encoding="utf-8")
@@ -273,11 +278,12 @@ ENCODAGE = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "30", "-
 
 
 def _largeur(texte: str, taille: float) -> float:
-    """Largeur approximative en pixels d'un texte en DejaVu Sans Bold (majuscules), pour ne jamais déborder."""
+    """Largeur approximative en pixels d'un texte en majuscules (Anton, ou DejaVu Sans Bold), pour ne jamais
+    déborder. Volontairement un peu large : mieux vaut une ligne de plus qu'un texte coupé."""
     l = 0.0
     for c in texte:
         l += 1.05 if c in "MWÆŒ" else 0.42 if c in " .,'’!:;|Iil-" else 0.8
-    return l * taille
+    return l * taille * (0.6 if TITRE != FONT else 1.0)
 
 
 def _lignes_px(texte: str, taille: int, max_px: int = 900) -> tuple[list[str], int]:
@@ -312,13 +318,13 @@ def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path |
                    check=True, timeout=120)
     d = max(duree_min, (duree_voix or 0) + 0.5)
     filtres = ["[0:v]boxblur=20:4,eq=brightness=-0.3"]
-    lignes = _lignes(gros, 12)
-    taille = 240 if len(gros) <= 4 else 92
+    lignes, taille = _lignes_px(gros, 260 if len(gros) <= 4 else 120, 900)
+    lignes = lignes[:4]
     y0 = 760 - len(lignes) * taille * 0.6
     for i, ligne in enumerate(lignes):
         f = travail / f"{sortie.stem}_l{i}.txt"
         f.write_text(ligne, encoding="utf-8")
-        filtres.append(f"drawtext=fontfile={FONT}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
+        filtres.append(f"drawtext=fontfile={TITRE}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
                        f"borderw=8:bordercolor=black:x=(w-text_w)/2:y={y0 + i * taille * 1.2:.0f}")
     if petit:
         f = travail / f"{sortie.stem}_p.txt"
@@ -351,14 +357,15 @@ def habiller(segment: str, sortie: Path, gros: str | None, petit: str | None, vo
     y = HAUT_CAM + 30
     if gros:
         court = len(gros) <= 4  # « #3 », « 1/2 »…
-        lignes, taille = _lignes_px(gros, 190 if court else 86, 880)  # marge pour le fond et le contour
+        lignes, taille = _lignes_px(gros, 220 if court else 112, 900)  # marge pour le contour
         for i, ligne in enumerate(lignes[:3]):
             f = travail / f"{sortie.stem}_l{i}.txt"
             f.write_text(ligne, encoding="utf-8")
-            filtres.append(f"drawtext=fontfile={FONT}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
-                           f"borderw=8:bordercolor=black:box=1:boxcolor=black@0.45:boxborderw=18:"
+            # style « affiche » : police haute et serrée, gros contour noir et ombre portée, sans cadre
+            filtres.append(f"drawtext=fontfile={TITRE}:textfile={f.name}:fontsize={taille}:fontcolor=white:"
+                           f"borderw=7:bordercolor=black:shadowcolor=black@0.6:shadowx=5:shadowy=6:"
                            f"x=(w-text_w)/2:y={y}:enable='lt(t,{d:.2f})'")
-            y += int(taille * 1.25)
+            y += int(taille * 1.12)
     if petit:
         f = travail / f"{sortie.stem}_p.txt"
         f.write_text(petit, encoding="utf-8")
@@ -474,6 +481,12 @@ def preparer_segment(clip, note_min: float | None = None) -> None:
     if pic is not None and pic >= 4 and m.get("teaser", True):
         # la seconde la plus folle, montrée tout au début de la vidéo avant de reprendre le clip depuis le début
         couper(str(sortie), teaser, pic - 1.2, pic + 0.6)
+    if (config().get("edits") or {}).get("actif", True):
+        try:  # les plus beaux plans du clip sont mis de côté pour les edits
+            from .edits import extraire_plans
+            extraire_plans(clip, debut, fin, coupes, camera)
+        except Exception as e:
+            L.warning("Plans pour les edits non extraits : %s", e)
     conn = db()
     conn.execute(
         "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=?, score=? WHERE id=?",
@@ -666,6 +679,12 @@ def lancer() -> int:
             conn.execute("UPDATE clips SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], clip["id"]))
             conn.commit()
             L.error("Échec du montage %s : %s", clip["id"], e)
+    try:  # un edit stylé par jour, avec les plus beaux plans mis de côté
+        from .edits import fabriquer_edit, peut_faire_un_edit
+        if peut_faire_un_edit() and fabriquer_edit():
+            faites += 1
+    except Exception as e:
+        L.error("Échec de l'edit : %s", e)
     return faites
 
 
