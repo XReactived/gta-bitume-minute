@@ -250,6 +250,79 @@ def _moins_utilises(plans: list[dict], n: int = 40) -> list[dict]:
     return plans[:n]
 
 
+BPM = [120, 128, 140, 150]  # tempos des sons d'edit qui tournent (drill, funk, phonk)
+MOTIFS = {"rapide": [2, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 1, 1, 4, 2, 2, 1, 1, 2, 4, 2, 2, 1, 1, 2, 4],
+          "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4]}
+
+
+def _grille(bpm: int, motif: list[int], cible: float, maxi: float = 2.0) -> tuple[list[float], list[int]]:
+    """Durées des plans calées sur les temps du son (arrondies à l'image, sans dérive), et le nombre de temps
+    écoulés à chaque coupe (pour poser flashs et textes sur les temps forts)."""
+    temps = 60 / bpm
+    durees, cumuls, cumul, avant = [], [], 0, 0.0
+    for nb in motif:
+        cumul += max(1, min(nb, int(maxi / temps)))
+        fin = round(cumul * temps * 30) / 30
+        durees.append(fin - avant)
+        cumuls.append(cumul)
+        avant = fin
+        if avant >= cible:
+            break
+    return durees, cumuls
+
+
+def _effet(d: float, src: float, k: int) -> tuple[str, str]:
+    """Vitesse (normal, ralenti, rampe : accéléré puis ralenti au moment fort) et mouvement de caméra
+    (punch : zoom qui claque sur la coupe, secousse, lent : zoom avant doux) de chaque plan."""
+    r = random.random()
+    if src >= 1.02 * d + 0.05 and r < 0.35:
+        vit = "rampe"
+    elif src < d + 0.05 or (k % 5 == 4 and r < 0.6):
+        vit = "ralenti"
+    else:
+        vit = "normal"
+    return vit, random.choice(["punch", "punch", "secousse", "lent"])
+
+
+def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str) -> str:
+    """Filtre d'un plan : cadrage W×H, vitesse, coupe à la durée d, puis mouvement de caméra."""
+    if vit == "ralenti":
+        pts = "setpts=2*PTS,"
+    elif vit == "rampe":  # 40 % du plan en accéléré ×1,8, puis ralenti ×0,5
+        x = 0.4 * d * 1.8
+        pts = f"setpts='if(lt(T,{x:.3f}),PTS/1.8,PTS/0.5+{x / 1.8 - x / 0.5:.4f}/TB)',"
+    else:
+        pts = ""
+    z = {"punch": "(1+0.16*exp(-t*11))", "lent": f"(1+0.07*t/{d:.2f})"}.get(mouv)
+    if z:
+        fx = (f"scale=w='trunc({W}*{z}/2)*2':h='trunc({H}*{z}/2)*2':eval=frame,"
+              f"crop={W}:{H}:(iw-{W})/2:(ih-{H})/2")
+    else:  # secousse qui s'amortit
+        fx = (f"scale={int(W * 1.07) // 2 * 2}:{int(H * 1.07) // 2 * 2},"
+              f"crop={W}:{H}:'(iw-ow)/2*(1+0.9*sin(t*83)*exp(-t*5))':'(ih-oh)/2*(1+0.9*cos(t*67)*exp(-t*5))'")
+    return (f"[{entree}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,{pts}fps=30,"
+            f"trim=duration={d:.3f},setpts=PTS-STARTPTS,{fx},setsar=1[{sortie}];")
+
+
+def _son(entree: str, sortie: str, d: float) -> str:
+    return (f"[{entree}]atrim=duration={d:.3f},asetpts=PTS-STARTPTS,apad=whole_dur={d:.3f},"
+            f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.3f}:d=0.08,volume=0.4[{sortie}];")
+
+
+def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
+    """Un plan par case de la grille, assez long, jamais deux plans du même clip à la suite."""
+    choisis, dernier = [], None
+    for d in durees:
+        p = next((x for x in dispo if x["clip"] != dernier and x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08),
+                 None) or next((x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        if not p:
+            break
+        dispo.remove(p)
+        choisis.append(p)
+        dernier = p["clip"]
+    return choisis
+
+
 def fabriquer_edit(genre: str | None = None) -> bool:
     """Assemble un edit : plans officiels (GTA VI, GTA V/Online, ou comparatif) ou plans des streams."""
     e = config().get("edits") or {}
@@ -268,16 +341,14 @@ def fabriquer_edit(genre: str | None = None) -> bool:
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
     cible = float(e.get("duree_s", 18))
-    rythme = [1.5, 0.9, 1.2, 0.8, 1.6, 1.0, 0.9, 1.3, 0.8, 1.1, 1.7, 0.9, 1.2, 1.0, 1.8, 0.9, 1.3, 1.1, 1.5, 1.0]
-    choisis, durees, dernier = [], [], None
-    while dispo and sum(durees) < cible and len(choisis) < len(rythme):
-        p = next((x for x in dispo if x["clip"] != dernier), dispo[0])
-        dispo.remove(p)
-        choisis.append(p)
-        durees.append(min(rythme[len(durees)], p.get("duree", DUREE_PLAN) - 0.05))
-        dernier = p["clip"]
-    total = sum(durees)
+    bpm = random.choice(BPM)
+    durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible)
+    choisis = _placer(dispo, durees)
+    durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
+    if len(choisis) < 6:
+        return False
     redac = _textes(choisis, genre)
+    redac["son"] = f"{redac['son']}, vers {bpm} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
 
     if paysage:  # peu de texte sur les edits de trailers : 2 phrases au plus
@@ -287,33 +358,36 @@ def fabriquer_edit(genre: str | None = None) -> bool:
     sortie = dossier / "video.mp4"
     entrees, chaine = [], []
     for i, (p, d) in enumerate(zip(choisis, durees)):
-        entrees += ["-t", f"{d:.2f}", "-i", p["fichier"]]
-        chaine.append(f"[{i}:v]scale={W}:{H},setsar=1,fps=30,trim=duration={d:.2f},setpts=PTS-STARTPTS[v{i}];"
-                      f"[{i}:a]atrim=duration={d:.2f},asetpts=PTS-STARTPTS,"
-                      f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.2f}:d=0.08,volume=0.4[a{i}];")
+        entrees += ["-i", p["fichier"]]
+        vit, mouv = _effet(d, p.get("duree", DUREE_PLAN), i)
+        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv) + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
-    return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie)
+    return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls)
 
 
-def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie,
+def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
            y_texte=None) -> bool:
     """Flashs, phrases chocs, filigrane, encodage, contrôle qualité et mise en file (commun à tous les edits)."""
     from .agent_montage import ENCODAGE, FONT, TITRE, _lignes_px, duree
     from .controle import verifier
     total, n = sum(durees), len(choisis)
     # flash blanc très court sur quelques coupes, pour le rythme
-    coupes = np.cumsum(durees)[:-1]
-    flashs = "+".join(f"between(t,{c:.2f},{c + 0.07:.2f})" for c in coupes[1::3])
+    coupes = list(np.cumsum(durees)[:-1])
+    # flash blanc sur les coupes qui tombent sur un temps fort (début de mesure)
+    fortes = [c for c, b in zip(coupes, cumuls) if b % 4 == 0] or coupes[1::3]
+    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes)
     v = "v0"
     if flashs:
         graphe += f";[v0]eq=brightness='if({flashs},0.35,0)':eval=frame[vf]"
         v = "vf"
     # les phrases chocs, une après l'autre, réparties sur la durée (la dernière jusqu'à la fin)
-    tranche = total / len(textes)
+    # chaque phrase apparaît pile sur une coupe (donc sur le temps), la dernière reste jusqu'à la fin
+    bornes = [0.0] + [min(coupes, key=lambda c: abs(c - k * total / len(textes))) if coupes else k * total / len(textes)
+                      for k in range(1, len(textes))] + [total]
     for k, texte in enumerate(textes):
         lignes, taille = _lignes_px(texte, 150 if paysage else 190, 1500 if paysage else 940)
-        t0, t1 = k * tranche + 0.15, (k + 1) * tranche if k < len(textes) - 1 else total
+        t0, t1 = bornes[k], bornes[k + 1]
         y = (y_texte or (H * 0.5 if paysage else 820)) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
@@ -357,7 +431,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
         else:  # plan de stream : ne sert qu'une fois
             Path(p["fichier"]).unlink(missing_ok=True)
             Path(p["fichier"] + ".json").unlink(missing_ok=True)
-    L.info("Edit %s %s : %d plans, %.0f s, %s", genre, "prêt" if ok else "refusé par le contrôle qualité", n, total,
+    L.info("Edit %s %s : %d plans, %.1f s, %s", genre, "prêt" if ok else "refusé par le contrôle qualité", n, total,
            " / ".join(textes) if ok else " | ".join(problemes))
     return ok
 
@@ -370,31 +444,38 @@ def _fabriquer_comparatif() -> bool:
     g5 = _moins_utilises(_plans_jeu("gta5"), 20)
     g6 = _moins_utilises(_plans_jeu("gta6"), 20)
     cible = float(e.get("duree_s", 18))
-    rythme = [2.0, 1.6, 1.8, 1.5, 2.0, 1.6, 1.8, 1.5, 2.0, 1.7, 1.9, 1.6]  # plus lent : on doit avoir le temps de comparer
+    bpm = random.choice(BPM)
+    grille, cumuls = _grille(bpm, MOTIFS["lent"], cible)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
-    while g5 and g6 and sum(durees) < cible and len(paires) < len(rythme):
-        a, b = g5.pop(0), g6.pop(0)
+    for d in grille:
+        a = next((x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        b = next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        if not (a and b):
+            break
+        g5.remove(a)
+        g6.remove(b)
         paires.append((a, b))
-        durees.append(min(rythme[len(durees)], a.get("duree", DUREE_PLAN) - 0.05, b.get("duree", DUREE_PLAN) - 0.05))
+        durees.append(d)
+    cumuls = cumuls[:len(paires)]
     if len(paires) < 4:
         return False
     choisis = [p for paire in paires for p in paire]
     redac = _textes(choisis, "comparatif")
+    redac["son"] = f"{redac['son']}, vers {bpm} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:3] or ["GTA 5 VS GTA 6"]
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
     W, H = 1080, 1920
-    moitie = "scale=-2:960,crop=1080:960,setsar=1,fps=30"  # plan 16:9 recadré au centre pour une demi-image
     entrees, chaine = [], []
     for i, ((a, b), d) in enumerate(zip(paires, durees)):
-        entrees += ["-t", f"{d:.2f}", "-i", a["fichier"], "-t", f"{d:.2f}", "-i", b["fichier"]]
+        entrees += ["-i", a["fichier"], "-i", b["fichier"]]
         h_, b_ = 2 * i, 2 * i + 1
-        chaine.append(f"[{h_}:v]{moitie},trim=duration={d:.2f},setpts=PTS-STARTPTS[h{i}];"
-                      f"[{b_}:v]{moitie},trim=duration={d:.2f},setpts=PTS-STARTPTS[b{i}];"
-                      f"[h{i}][b{i}]vstack=inputs=2[v{i}];"
-                      f"[{b_}:a]atrim=duration={d:.2f},asetpts=PTS-STARTPTS,"
-                      f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.2f}:d=0.08,volume=0.4[a{i}];")
+        src = min(a.get("duree", DUREE_PLAN), b.get("duree", DUREE_PLAN))
+        vit, mouv = _effet(d, src, i)  # même effet sur les deux moitiés, pour comparer à armes égales
+        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv)
+                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv)
+                      + f"[h{i}][b{i}]vstack=inputs=2[v{i}];" + _son(f"{b_}:a", f"a{i}", d))
     n = len(paires)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
     # trait noir entre les deux moitiés, et l'étiquette du jeu dans chacune
@@ -404,7 +485,7 @@ def _fabriquer_comparatif() -> bool:
                f"drawtext=fontfile={TITRE}:text='GTA VI':fontsize=96:fontcolor=0xFF5FB4:borderw=5:bordercolor=black:"
                "x=50:y=h-160[v0]")
     return _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
-                  y_texte=960)
+                  cumuls, y_texte=960)
 
 
 def peut_faire_un_edit() -> bool:
