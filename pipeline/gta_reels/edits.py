@@ -18,7 +18,8 @@ from .recadrage import _images
 
 L = log("edits")
 PLANS = DATA / "plans"
-SOURCES = DATA / "sources"          # trailers officiels déposés à la main (jamais téléchargés par l'agent)
+SOURCES = DATA / "sources"          # vidéos officielles déposées à la main (jamais téléchargées par l'agent) :
+                                    # GTA VI à la racine ou dans sources/gta6, GTA V et GTA Online dans sources/gta5
 PLANS_R = DATA / "plans_rockstar"   # plans découpés dans ces trailers (gardés et réutilisés)
 DUREE_PLAN = 2.2  # chaque plan mis de côté dure 2,2 s (on en garde 0,8 à 1,8 s dans l'edit)
 COULEURS = ("eq=contrast=1.12:saturation=1.3:gamma=0.97,"
@@ -106,6 +107,11 @@ def _plans_dispo(dossier: Path = PLANS) -> list[dict]:
     return out
 
 
+def _plans_jeu(jeu: str) -> list[dict]:
+    """Plans officiels d'un jeu (« gta6 » ou « gta5 ») ; les anciens plans sans étiquette sont du GTA VI."""
+    return [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu]
+
+
 def _coupes_scenes(video: str) -> list[float]:
     r = subprocess.run(["ffmpeg", "-i", video, "-vf", "select='gt(scene,0.3)',showinfo", "-an", "-f", "null", "-"],
                        capture_output=True, text=True, timeout=1800)
@@ -118,9 +124,14 @@ def importer_trailers() -> int:
     from .agent_montage import duree
     SOURCES.mkdir(parents=True, exist_ok=True)
     PLANS_R.mkdir(parents=True, exist_ok=True)
+    for sous in ("gta5", "gta6"):
+        (SOURCES / sous).mkdir(exist_ok=True)
+    fichiers = [(f, "gta6") for f in sorted(SOURCES.iterdir())] + \
+               [(f, j) for j in ("gta6", "gta5") for f in sorted((SOURCES / j).iterdir())]
     total = 0
-    for src in sorted(SOURCES.iterdir()):
-        if src.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v") or Path(str(src) + ".fait").exists():
+    for src, jeu in fichiers:
+        if not src.is_file() or src.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v") \
+                or Path(str(src) + ".fait").exists():
             continue
         d = duree(str(src))
         bornes = [0.0] + _coupes_scenes(str(src)) + [d]
@@ -141,7 +152,8 @@ def importer_trailers() -> int:
                 prec = bande
             if not lum or np.mean(lum) < 35:  # plan noir, fondu ou carton
                 continue
-            sortie = PLANS_R / f"{src.stem[:40]}_{k:03d}.mp4"
+            nom = f"{jeu}_{src.stem[:40]}_{k:03d}"
+            sortie = PLANS_R / f"{nom}.mp4"
             try:
                 subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t0:.2f}", "-t", f"{t1 - t0:.2f}",
                                 "-i", str(src), "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,"
@@ -152,13 +164,13 @@ def importer_trailers() -> int:
                 L.warning("Plan de trailer non extrait : %s", e)
                 continue
             Path(str(sortie) + ".json").write_text(json.dumps({
-                "clip": f"{src.stem[:40]}_{k:03d}", "source": src.stem, "streamer": "Rockstar Games",
+                "clip": nom, "source": src.stem, "jeu": jeu, "streamer": "Rockstar Games",
                 "login": "", "titre": src.stem, "mouvement": round(float(np.mean(mouv or [0])), 3), "note": 8,
                 "duree": round(t1 - t0, 2), "utilisations": 0, "paysage": True,
                 "cree": dt.datetime.now().isoformat(timespec="seconds")}), encoding="utf-8")
             faits += 1
         Path(str(src) + ".fait").write_text(str(faits), encoding="utf-8")
-        L.info("Trailer « %s » : %d plans gardés", src.name, faits)
+        L.info("Vidéo officielle %s « %s » : %d plans gardés", jeu.upper(), src.name, faits)
         total += faits
     return total
 
@@ -178,9 +190,27 @@ CONSIGNE = """Tu écris les textes d'un « edit » TikTok GTA 6 : 15 à 25 secon
 - son : le style de musique qui collerait (ex. « phonk agressif », « drill lente », « son mélancolique ralenti »)."""
 
 
-def _textes(plans: list[dict]) -> dict:
+GENRES = {
+    "rockstar": "Plans : images officielles de GTA 6 (Vice City, Leonida).",
+    "online": "Plans : images officielles de GTA V et GTA Online (Los Santos). L'edit rend hommage à GTA 5 / GTA Online "
+              "(nostalgie, « 10 ans après toujours là », « en attendant GTA 6 »). Ne dis pas que ces images sont de GTA 6.",
+    "comparatif": "Edit COMPARATIF en écran partagé : GTA V en haut, GTA VI en bas, plan contre plan. Les textes jouent sur "
+                  "le fossé entre les deux (ex. « 2013 VS 2026 », « LA DIFFÉRENCE », « C'EST PLUS LE MÊME JEU »). "
+                  "Légende qui pousse à débattre en commentaire (« lequel tu préfères ? »).",
+    "streams": "Plans : moments de stream de joueurs sur GTA.",
+}
+DEFAUTS = {
+    "online": {"textes": ["LOS SANTOS", "TOUJOURS", "LÀ"], "legende": "10 ans après, toujours le même frisson 🌆",
+               "hashtags": ["#gtaonline", "#gta5", "#gtaedit"], "son": "son mélancolique ralenti"},
+    "comparatif": {"textes": ["GTA 5 VS GTA 6", "LA DIFFÉRENCE", "EST FOLLE"],
+                   "legende": "13 ans d'écart… tu préfères lequel ? 👇",
+                   "hashtags": ["#gta5vsgta6", "#gta6", "#gta5"], "son": "phonk qui monte"},
+}
+
+
+def _textes(plans: list[dict], genre: str = "streams") -> dict:
     from .redaction import _appeler
-    titres = "\n".join(f"- {p['streamer']} : {p['titre']}" for p in plans)
+    titres = GENRES.get(genre, "") + "\n" + "\n".join(f"- {p['streamer']} : {p['titre']}" for p in plans)
     recents = "\n".join(r[0] or "" for r in db().execute(
         "SELECT hook FROM videos WHERE format='edit' ORDER BY id DESC LIMIT 8"))
     try:
@@ -188,40 +218,52 @@ def _textes(plans: list[dict]) -> dict:
                                   f"Textes déjà utilisés (à ne pas répéter) :\n{recents or '(aucun)'}", SCHEMA, 1500)
     except Exception as e:
         L.warning("Textes de l'edit par défaut (%s)", e)
+        if genre in DEFAUTS:
+            return dict(DEFAUTS[genre])
         return {"textes": random.choice([["VICE CITY", "HITS", "DIFFERENT"], ["ON EST", "PAS PRÊTS", "POUR ÇA"],
                                          ["ONLY", "IN LEONIDA"]]),
                 "legende": "GTA 6 c'est autre chose 🌴", "hashtags": ["#gta6edit", "#vicecity"],
                 "son": "phonk ou son tendance du moment"}
 
 
+ORDRE = ["comparatif", "rockstar", "online", "streams"]  # rotation : un genre différent chaque jour
+
+
 def _choisir_type() -> str | None:
-    """« rockstar » (trailers, en paysage) ou « streams » (plans des clips, en vertical), en alternant."""
-    r_ok = len(_plans_dispo(PLANS_R)) >= 12
+    """Le genre suivant dans la rotation, parmi ceux qui ont assez de plans :
+    « comparatif » (GTA V contre GTA VI, écran partagé), « rockstar » (GTA VI, paysage),
+    « online » (GTA V / Online, paysage), « streams » (plans des clips, vertical)."""
+    g6, g5 = len(_plans_jeu("gta6")), len(_plans_jeu("gta5"))
     s_dispo = _plans_dispo(PLANS)
-    s_ok = len(s_dispo) >= 12 and len({p["clip"] for p in s_dispo}) >= 4
+    ok = {"comparatif": g6 >= 6 and g5 >= 6, "rockstar": g6 >= 12, "online": g5 >= 12,
+          "streams": len(s_dispo) >= 12 and len({p["clip"] for p in s_dispo}) >= 4}
     dernier = db().execute("SELECT conseil FROM videos WHERE format='edit' ORDER BY id DESC LIMIT 1").fetchone()
-    avant = "rockstar" if dernier and (dernier[0] or "").startswith("[rockstar]") else "streams"
-    if r_ok and s_ok:
-        return "streams" if avant == "rockstar" else "rockstar"
-    return "rockstar" if r_ok else "streams" if s_ok else None
+    avant = next((g for g in ORDRE if dernier and (dernier[0] or "").startswith(f"[{g}]")), ORDRE[-1])
+    i = ORDRE.index(avant)
+    return next((g for g in ORDRE[i + 1:] + ORDRE[:i + 1] if ok[g]), None)
+
+
+def _moins_utilises(plans: list[dict], n: int = 40) -> list[dict]:
+    """Les plans officiels resservent : les moins utilisés d'abord, dans un ordre varié."""
+    random.shuffle(plans)
+    plans.sort(key=lambda p: p.get("utilisations", 0))
+    return plans[:n]
 
 
 def fabriquer_edit(genre: str | None = None) -> bool:
-    """Assemble un edit : plans des trailers Rockstar (paysage, comme les edits qui percent) ou des streams."""
-    from .agent_montage import ENCODAGE, FONT, TITRE, _lignes_px, duree
-    from .controle import verifier
-
+    """Assemble un edit : plans officiels (GTA VI, GTA V/Online, ou comparatif) ou plans des streams."""
     e = config().get("edits") or {}
     genre = genre or _choisir_type()
     if not genre:
         return False
-    paysage = genre == "rockstar"
+    if genre == "comparatif":
+        return _fabriquer_comparatif()
+    officiel = genre in ("rockstar", "online")
+    paysage = officiel
     W, H = (1920, 1080) if paysage else (1080, 1920)
-    dispo = _plans_dispo(PLANS_R if paysage else PLANS)
-    if paysage:  # les plans des trailers resservent : les moins utilisés d'abord, dans un ordre varié
-        random.shuffle(dispo)
-        dispo.sort(key=lambda p: p.get("utilisations", 0))
-        dispo = dispo[:40]
+    dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
+    if officiel:
+        dispo = _moins_utilises(dispo)
         dispo.sort(key=lambda p: p["mouvement"], reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
@@ -235,12 +277,12 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         durees.append(min(rythme[len(durees)], p.get("duree", DUREE_PLAN) - 0.05))
         dernier = p["clip"]
     total = sum(durees)
-    redac = _textes(choisis)
+    redac = _textes(choisis, genre)
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
 
     if paysage:  # peu de texte sur les edits de trailers : 2 phrases au plus
         textes = textes[:2]
-    dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M}"
+    dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
     entrees, chaine = [], []
@@ -251,6 +293,15 @@ def fabriquer_edit(genre: str | None = None) -> bool:
                       f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.2f}:d=0.08,volume=0.4[a{i}];")
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
+    return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie)
+
+
+def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie,
+           y_texte=None) -> bool:
+    """Flashs, phrases chocs, filigrane, encodage, contrôle qualité et mise en file (commun à tous les edits)."""
+    from .agent_montage import ENCODAGE, FONT, TITRE, _lignes_px, duree
+    from .controle import verifier
+    total, n = sum(durees), len(choisis)
     # flash blanc très court sur quelques coupes, pour le rythme
     coupes = np.cumsum(durees)[:-1]
     flashs = "+".join(f"between(t,{c:.2f},{c + 0.07:.2f})" for c in coupes[1::3])
@@ -263,7 +314,7 @@ def fabriquer_edit(genre: str | None = None) -> bool:
     for k, texte in enumerate(textes):
         lignes, taille = _lignes_px(texte, 150 if paysage else 190, 1500 if paysage else 940)
         t0, t1 = k * tranche + 0.15, (k + 1) * tranche if k < len(textes) - 1 else total
-        y = (H * 0.5 if paysage else 820) - len(lignes) * taille * 0.55
+        y = (y_texte or (H * 0.5 if paysage else 820)) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
             f.write_text(ligne, encoding="utf-8")
@@ -278,12 +329,14 @@ def fabriquer_edit(genre: str | None = None) -> bool:
                    check=True, cwd=dossier, timeout=900)
 
     tags, vus = [], set()
-    for h in (config()["tiktok"].get("hashtags_fixes") or []) + redac["hashtags"] + ["#gta6edit"]:
+    extra = {"online": ["#gtaonline"], "comparatif": ["#gta5vsgta6"]}.get(genre, ["#gta6edit"])
+    for h in (config()["tiktok"].get("hashtags_fixes") or []) + redac["hashtags"] + extra:
         h = "#" + h.strip().lstrip("#").replace(" ", "")
         if len(h) > 1 and h.lower() not in vus:
             vus.add(h.lower())
             tags.append(h)
-    credits = ("Rockstar Games (trailer officiel, edit de fan)" if paysage
+    officiel = genre in ("rockstar", "online", "comparatif")
+    credits = ("Rockstar Games (images officielles, edit de fan)" if officiel
                else " ".join(sorted({f"twitch.tv/{p['login']}" for p in choisis})))
     legende = f"{redac['legende']}\n\n🎥 Images : {credits}\n{' '.join(tags[:5])}"[:2200]
     ok, problemes = verifier(sortie, [str(sortie)], [], "edit",
@@ -297,16 +350,61 @@ def fabriquer_edit(genre: str | None = None) -> bool:
          f"[{genre}] {redac['son']}"))
     conn.commit()
     for p in choisis:
-        if paysage:  # plan de trailer : on note qu'il a servi (il resservira plus tard, mélangé autrement)
+        if officiel:  # plan officiel : on note qu'il a servi (il resservira plus tard, mélangé autrement)
             meta = {k: v for k, v in p.items() if k != "fichier"}
             meta["utilisations"] = meta.get("utilisations", 0) + 1
             Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         else:  # plan de stream : ne sert qu'une fois
             Path(p["fichier"]).unlink(missing_ok=True)
             Path(p["fichier"] + ".json").unlink(missing_ok=True)
-    L.info("Edit %s : %d plans, %.0f s, %s", "prêt" if ok else "refusé par le contrôle qualité", n, total,
+    L.info("Edit %s %s : %d plans, %.0f s, %s", genre, "prêt" if ok else "refusé par le contrôle qualité", n, total,
            " / ".join(textes) if ok else " | ".join(problemes))
     return ok
+
+
+def _fabriquer_comparatif() -> bool:
+    """GTA V contre GTA VI en écran partagé vertical : GTA V en haut, GTA VI en bas, plan contre plan,
+    avec l'étiquette du jeu dans chaque moitié (le format « GTA 5 vs GTA 6 » qui fait débattre en commentaire)."""
+    from .agent_montage import TITRE
+    e = config().get("edits") or {}
+    g5 = _moins_utilises(_plans_jeu("gta5"), 20)
+    g6 = _moins_utilises(_plans_jeu("gta6"), 20)
+    cible = float(e.get("duree_s", 18))
+    rythme = [2.0, 1.6, 1.8, 1.5, 2.0, 1.6, 1.8, 1.5, 2.0, 1.7, 1.9, 1.6]  # plus lent : on doit avoir le temps de comparer
+    paires, durees = [], []
+    while g5 and g6 and sum(durees) < cible and len(paires) < len(rythme):
+        a, b = g5.pop(0), g6.pop(0)
+        paires.append((a, b))
+        durees.append(min(rythme[len(durees)], a.get("duree", DUREE_PLAN) - 0.05, b.get("duree", DUREE_PLAN) - 0.05))
+    if len(paires) < 4:
+        return False
+    choisis = [p for paire in paires for p in paire]
+    redac = _textes(choisis, "comparatif")
+    textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:3] or ["GTA 5 VS GTA 6"]
+    dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
+    dossier.mkdir(parents=True, exist_ok=True)
+    sortie = dossier / "video.mp4"
+    W, H = 1080, 1920
+    moitie = "scale=-2:960,crop=1080:960,setsar=1,fps=30"  # plan 16:9 recadré au centre pour une demi-image
+    entrees, chaine = [], []
+    for i, ((a, b), d) in enumerate(zip(paires, durees)):
+        entrees += ["-t", f"{d:.2f}", "-i", a["fichier"], "-t", f"{d:.2f}", "-i", b["fichier"]]
+        h_, b_ = 2 * i, 2 * i + 1
+        chaine.append(f"[{h_}:v]{moitie},trim=duration={d:.2f},setpts=PTS-STARTPTS[h{i}];"
+                      f"[{b_}:v]{moitie},trim=duration={d:.2f},setpts=PTS-STARTPTS[b{i}];"
+                      f"[h{i}][b{i}]vstack=inputs=2[v{i}];"
+                      f"[{b_}:a]atrim=duration={d:.2f},asetpts=PTS-STARTPTS,"
+                      f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.2f}:d=0.08,volume=0.4[a{i}];")
+    n = len(paires)
+    graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
+    # trait noir entre les deux moitiés, et l'étiquette du jeu dans chacune
+    graphe += (";[vc]drawbox=x=0:y=954:w=iw:h=12:color=black:t=fill,"
+               f"drawtext=fontfile={TITRE}:text='GTA V':fontsize=96:fontcolor=white:borderw=5:bordercolor=black:"
+               "x=50:y=50,"
+               f"drawtext=fontfile={TITRE}:text='GTA VI':fontsize=96:fontcolor=0xFF5FB4:borderw=5:bordercolor=black:"
+               "x=50:y=h-160[v0]")
+    return _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
+                  y_texte=960)
 
 
 def peut_faire_un_edit() -> bool:

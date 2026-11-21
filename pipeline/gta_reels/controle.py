@@ -210,7 +210,9 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
                        "avec de gros mots façon affiche et quelques flashs blancs aux coupes ; le son sera ajouté "
                        "dans TikTok. Vérifie surtout que les textes sont lisibles, sans faute, et que les images "
                        "sont belles (pas de menu, d'écran noir ou d'interface de stream). Un edit de trailer peut être en "
-                       "paysage 16:9 avec des bandes noires de cinéma : c'est voulu. " if fmt == "edit" else "")
+                       "paysage 16:9 avec des bandes noires de cinéma : c'est voulu. Un edit comparatif montre GTA V en haut et "
+                       "GTA VI en bas (écran partagé, étiquettes « GTA V » / « GTA VI ») : c'est voulu, et les images "
+                       "de GTA V sont normalement moins belles. " if fmt == "edit" else "")
                     + "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) ; dans "
                     "un top ou un duel, un petit texte jaune en dessous donne le numéro et le streamer (pas sur un "
                     "clip solo). Ce n'est pas une erreur si le titre parle de la vidéo entière. "
