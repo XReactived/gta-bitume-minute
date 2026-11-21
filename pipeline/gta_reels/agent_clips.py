@@ -1,5 +1,6 @@
 """Agent 1 : trouve les meilleurs clips Twitch récents et les télécharge."""
 import datetime as dt
+import json
 import subprocess
 
 import requests
@@ -79,13 +80,33 @@ def chercher() -> list[dict]:
     return retenus
 
 
+def _infos_video(chemin: str) -> tuple[int, int, bool]:
+    """(largeur, hauteur, a du son) du fichier téléchargé."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "json",
+                        chemin], capture_output=True, text=True, timeout=60)
+    flux = json.loads(r.stdout or "{}").get("streams", [])
+    v = next((f for f in flux if f.get("codec_type") == "video"), {})
+    return int(v.get("width") or 0), int(v.get("height") or 0), any(f.get("codec_type") == "audio" for f in flux)
+
+
+# Twitch propose aussi des versions « portrait » toutes faites (jeu en petit, fond flou, parfois sans son) :
+# on veut toujours le clip original en paysage, avec le son.
+FORMAT = ("best[ext=mp4][aspect_ratio>1][format_id!*=portrait]/best[ext=mp4][format_id!*=portrait]"
+          "/best[ext=mp4][aspect_ratio>1]/best[ext=mp4]/best")
+
+
 def telecharger(url: str, clip_id: str) -> str:
     sortie = DATA / "brut" / f"{clip_id}.mp4"
+    sortie.unlink(missing_ok=True)
     subprocess.run(
-        ["yt-dlp", "-q", "--no-warnings", "-f", "best[ext=mp4]/best", "-o", str(sortie), url],
+        ["yt-dlp", "-q", "--no-warnings", "-f", FORMAT, "-o", str(sortie), url],
         check=True,
         timeout=300,
     )
+    largeur, hauteur, son = _infos_video(str(sortie))
+    if hauteur > largeur or not son:
+        sortie.unlink(missing_ok=True)
+        raise RuntimeError("clip reçu en version portrait ou sans son : écarté")
     return str(sortie)
 
 
