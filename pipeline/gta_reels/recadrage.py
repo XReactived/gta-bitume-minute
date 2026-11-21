@@ -163,3 +163,37 @@ def decaler(t: float, coupes: list[tuple[float, float]]) -> float | None:
         elif t > a:
             return None
     return t - retire
+
+
+def pic_son(video: str, debut: float, fin: float, coupes: list[tuple[float, float]] | None = None,
+            mini: float = 3.0) -> float | None:
+    """Moment le plus fort du clip (le streamer crie, rigole, explosion…), repéré au volume du son.
+    Renvoie le temps dans le segment final (temps morts retirés), ou None s'il n'y a pas de vrai pic.
+    mini : on ignore les premières secondes (le clip démarre déjà là-dessus)."""
+    import subprocess
+
+    try:
+        brut = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", f"{debut:.3f}", "-to", f"{fin:.3f}",
+                               "-i", video, "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                              capture_output=True, check=True, timeout=120).stdout
+    except Exception:
+        return None
+    son = np.frombuffer(brut, dtype=np.int16).astype(float)
+    fen = 800  # 0,1 s
+    if len(son) < fen * 60:
+        return None
+    rms = np.sqrt(np.convolve(son[: len(son) // fen * fen].reshape(-1, fen).__pow__(2).mean(axis=1),
+                              np.ones(5) / 5, mode="same"))  # volume lissé sur 0,5 s
+    temps = np.arange(len(rms)) * 0.1
+    ok = temps >= mini
+    for a, b in coupes or []:
+        ok &= (temps < a) | (temps > b)
+    if not ok.any():
+        return None
+    i = int(np.argmax(np.where(ok, rms, -1)))
+    if rms[i] < 2.2 * max(np.median(rms), 1.0):  # pas un vrai pic : volume à peu près constant
+        return None
+    t = decaler(float(temps[i]), coupes or [])
+    if t is not None:
+        L.info("Moment fort repéré à %.1f s (son %.1f fois plus fort que la moyenne)", t, rms[i] / max(np.median(rms), 1.0))
+    return t

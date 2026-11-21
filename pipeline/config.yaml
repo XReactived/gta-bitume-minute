@@ -68,6 +68,10 @@ montage:
   cadrage_suivi: true       # le cadre vertical suit le visage ou l'action (opencv)
   # retire au milieu des clips les passages où l'image est figée (menu pause, chargement) et où personne ne parle
   couper_temps_morts: true
+  # petit zoom rapide sur le jeu au moment le plus fort du clip (pic de son : cri, rire, explosion)
+  zoom_moment_fort: true
+  # la vidéo s'ouvre sur la seconde la plus folle du premier clip, puis reprend le clip depuis le début
+  teaser: true
 
 # --- Agent TikTok ---
 tiktok:

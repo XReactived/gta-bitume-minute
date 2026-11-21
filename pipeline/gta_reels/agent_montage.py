@@ -8,7 +8,7 @@ from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres, traduire
 from .controle import juger_clip, trouver_camera, verifier
-from .recadrage import decaler, expression, suivre, temps_morts
+from .recadrage import decaler, expression, pic_son, suivre, temps_morts
 from .voix import dire
 
 L = log("montage")
@@ -179,17 +179,25 @@ def _sans_coupes(reperes, coupes):
 def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | None,
                    camera: tuple[float, float, float, float] | None = None,
                    debut: float = 0.0, fin: float | None = None,
-                   coupes: list[tuple[float, float]] | None = None) -> None:
+                   coupes: list[tuple[float, float]] | None = None, pic: float | None = None) -> None:
     """Un clip -> un segment vertical 1080x1920 qui remplit l'écran.
     - avec caméra : la webcam du streamer en haut, le jeu recadré en grand en dessous ;
     - sans caméra : le jeu recadré en grand au centre, fond flou derrière.
     debut/fin : partie du clip à garder (temps morts retirés).
-    coupes : passages à retirer au milieu (menu pause, chargement…), en secondes depuis debut."""
+    coupes : passages à retirer au milieu (menu pause, chargement…), en secondes depuis debut.
+    pic : moment fort (temps dans le segment) où l'image du jeu fait un petit zoom rapide."""
     travail = sortie.parent
     suivi = config()["montage"].get("cadrage_suivi", True)
     coupes = coupes or []
     hors = "+".join(f"between(t,{a:.2f},{b:.2f})" for a, b in coupes)
     garder = f"select='not({hors})',setpts=N/FRAME_RATE/TB," if coupes else ""
+
+    def zoom(l_: int, h_: int) -> str:  # zoom punch : +14 % en 0,1 s au moment fort, puis retour en douceur
+        if pic is None:
+            return ""
+        z = f"(1+0.14*if(lt(t,{pic:.2f}),exp(-pow((t-{pic:.2f})/0.1,2)),exp(-pow((t-{pic:.2f})/0.7,2))))"
+        return (f",scale=w='trunc({l_}*{z}/2)*2':h='trunc({h_}*{z}/2)*2':eval=frame,"
+                f"crop={l_}:{h_}:(iw-{l_})/2:(ih-{h_})/2,setsar=1")
     couleurs = "eq=contrast=1.06:saturation=1.2"  # image qui claque un peu plus sur un téléphone
     if camera:
         x, y, l, h = camera
@@ -213,7 +221,7 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
             f"[0:v]{garder}split[s1][s2]",
             f"[s1]crop=iw*{l:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
             f"scale=1080:{HAUT_CAM}:force_original_aspect_ratio=increase,crop=1080:{HAUT_CAM},setsar=1[cam]",
-            f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:{pos_x}:0,scale=1080:{bas},setsar=1[jeu]",
+            f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:{pos_x}:0,scale=1080:{bas},setsar=1{zoom(1080, bas)}[jeu]",
             f"[cam][jeu]vstack,{couleurs},setsar=1[v0]",
         ]
     else:
@@ -223,7 +231,7 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
             f"[0:v]{garder}split[s1][s2]",
             "[s1]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,"
             "eq=brightness=-0.2[fond]",
-            f"[s2]crop=min(iw\\,ih*0.8):ih:{pos_x}:0,scale=1080:1350,setsar=1[jeu]",
+            f"[s2]crop=min(iw\\,ih*0.8):ih:{pos_x}:0,scale=1080:1350,setsar=1{zoom(1080, 1350)}[jeu]",
             f"[fond][jeu]overlay=0:285,{couleurs},setsar=1[v0]",
         ]
     courant = "v0"
@@ -301,12 +309,13 @@ def carte(segment: str, sortie: Path, gros: str, petit: str | None, voix: Path |
 
 
 def habiller(segment: str, sortie: Path, gros: str | None, petit: str | None, voix: Path | None,
-            duree_voix: float | None, duree_min: float = 2.5) -> None:
+            duree_voix: float | None, duree_min: float = 2.5, retard: float = 0.0) -> None:
     """Pose un titre sur le début du clip (pas d'écran figé) et y mixe la voix-off, le son du jeu baissé.
-    La vidéo démarre donc directement sur l'action."""
+    La vidéo démarre donc directement sur l'action.
+    retard : la voix ne commence qu'après ce temps (teaser au début, laissé avec son vrai son)."""
     travail = sortie.parent
     d_clip = duree(segment)
-    d = min(d_clip, max(duree_min, (duree_voix or 0) + 0.4))
+    d = min(d_clip, max(duree_min, (duree_voix or 0) + 0.4) + retard)
     filtres = []
     y = HAUT_CAM + 30
     if gros:
@@ -328,8 +337,9 @@ def habiller(segment: str, sortie: Path, gros: str | None, petit: str | None, vo
     entrees = ["-i", segment]
     if voix and duree_voix:
         entrees += ["-i", voix.name]
-        audio = (f"[0:a]volume=0.3:enable='lt(t,{duree_voix + 0.3:.2f})'[jeu];"
-                 "[1:a]aresample=48000,aformat=channel_layouts=stereo,adelay=150|150[vo];"
+        ms = int(150 + retard * 1000)
+        audio = (f"[0:a]volume=0.3:enable='between(t,{retard:.2f},{retard + duree_voix + 0.3:.2f})'[jeu];"
+                 f"[1:a]aresample=48000,aformat=channel_layouts=stereo,adelay={ms}|{ms}[vo];"
                  "[jeu][vo]amix=inputs=2:duration=first:normalize=0[a]")
     else:
         audio = "[0:a]anull[a]"
@@ -425,8 +435,14 @@ def preparer_segment(clip, note_min: float | None = None) -> None:
             else:
                 ecrire_ass_phrases([dict(b, texte=t) for b, t in zip(blocs, trad)], ass)
     sortie = dossier / "segment.mp4"
+    pic = pic_son(clip["fichier_brut"], debut, fin, coupes) if m.get("zoom_moment_fort", True) else None
     rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None,
-                   camera, debut, fin if fin < d_brut - 0.05 else None, coupes)
+                   camera, debut, fin if fin < d_brut - 0.05 else None, coupes, pic)
+    teaser = dossier / "teaser.mp4"
+    teaser.unlink(missing_ok=True)
+    if pic is not None and pic >= 4 and m.get("teaser", True):
+        # la seconde la plus folle, montrée tout au début de la vidéo avant de reprendre le clip depuis le début
+        couper(str(sortie), teaser, pic - 1.2, pic + 0.6)
     conn = db()
     conn.execute(
         "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=?, score=? WHERE id=?",
@@ -492,9 +508,15 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
             # on coupe juste avant le moment clé et on fait deviner la suite
             couper(seg, dossier / "avant_brut.mp4", 0, pause)
             seg = str(dossier / "avant_brut.mp4")
+        retard = 0.0
+        teaser = Path(seg).parent / "teaser.mp4"
+        if i == 0 and fmt != "devine" and m.get("teaser", True) and teaser.exists():
+            # la vidéo s'ouvre sur la seconde la plus folle, puis reprend le clip depuis le début
+            assembler([str(teaser), seg], dossier / "avec_teaser.mp4", 999)
+            seg, retard = str(dossier / "avec_teaser.mp4"), duree(str(teaser))
         if gros or petit or da:
-            habiller(seg, dossier / f"h{i}.mp4", gros, petit, va, da, 3.0 if i == 0 else 2.2)
-            habilles[str(dossier / f"h{i}.mp4")] = (c, gros, petit)
+            habiller(seg, dossier / f"h{i}.mp4", gros, petit, va, da, 3.0 if i == 0 else 2.2, retard)
+            habilles[str(dossier / f"h{i}.mp4")] = (c, gros, petit, retard)
             seg = str(dossier / f"h{i}.mp4")
         morceaux.append(seg)
         if coupe_devine:
@@ -524,11 +546,13 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
         if mc in noms:
             etiquettes.append(f"Clip de {noms[mc]['streamer']} : {noms[mc]['titre']}")
         elif mc in habilles:
-            c, gros, petit = habilles[mc]
+            c, gros, petit, retard = habilles[mc]
             k = ordre.index(c)
             txt = " / ".join(x for x in (gros, petit) if x)
             etiquettes.append(f"Clip {k + 1} sur {n}, de {c['streamer']} : {c['titre']}"
-                              + (f" (texte posé sur le début : « {txt} »)" if txt else ""))
+                              + (f" (texte posé sur le début : « {txt} »)" if txt else "")
+                              + (f" (voulu : s'ouvre sur un teaser de {retard:.1f} s, le moment fort du clip, "
+                                 "puis le clip reprend depuis son début)" if retard else ""))
         else:
             etiquettes.append({"c_devine": "Carte « que va-t-il se passer ? »",
                                "apres": "Suite du clip (réponse)", "c_suite": "Carte « la suite dans la partie suivante »",
