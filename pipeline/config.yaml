@@ -89,3 +89,11 @@ notifications:
   # Notification sur ton téléphone (appli gratuite « ntfy ») à chaque vidéo envoyée, avec la légende.
   actif: true
   serveur: https://ntfy.sh
+
+# --- YouTube Shorts ---
+# Chaque vidéo part aussi sur YouTube Shorts, publiée directement (pas de brouillon).
+# Ne fait rien tant que la chaîne n'est pas reliée (python -m gta_reels.youtube relier).
+youtube:
+  actif: true
+  visibilite: public        # public, unlisted (non répertoriée) ou private
+  description_fin: "Les meilleurs moments de streamers sur GTA 6. Clips issus de Twitch, crédit au streamer dans la vidéo. Page fan non affiliée à Rockstar Games."

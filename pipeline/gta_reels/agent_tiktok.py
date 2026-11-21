@@ -9,6 +9,7 @@ import requests
 
 from .commun import DATA, config, db, env, log
 from .notification import notifier
+from .youtube import publier_video as publier_youtube
 
 L = log("tiktok")
 API = "https://open.tiktokapis.com/v2"
@@ -158,6 +159,8 @@ def lancer() -> int | None:
                      else "Vidéo envoyée, TikTok la traite encore (quelques minutes)",
                      f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
                      4, ["clapper"])
+        conn.commit()  # avant YouTube, qui écrit dans la base avec sa propre connexion
+        publier_youtube(v)
     except Exception as e:
         if "spam_risk" in str(e) or "too_many_pending" in str(e):
             # trop de brouillons pas encore publiés : la vidéo reste en stock et repartira au prochain créneau
@@ -166,11 +169,14 @@ def lancer() -> int | None:
                      "TikTok refuse les nouvelles vidéos : publie ou supprime les brouillons en attente dans ta "
                      "boîte de réception TikTok. La vidéo repartira au prochain créneau.", 5, ["warning"])
             conn.commit()
+            publier_youtube(v)  # YouTube n'a pas cette limite : la vidéo y part quand même
             return v["id"]
         conn.execute("UPDATE videos SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], v["id"]))
         L.error("Échec de publication vidéo %d : %s", v["id"], e)
         notifier("Échec d'envoi vers TikTok", f"La vidéo « {v['hook']} » n'a pas pu partir : {str(e)[:300]}", 4,
                  ["warning"])
+        conn.commit()
+        publier_youtube(v)
     conn.commit()
     return v["id"]
 
