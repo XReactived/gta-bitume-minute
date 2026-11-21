@@ -12,22 +12,25 @@ from .commun import DATA, config, db, log
 L = log("essai")
 
 
-def lancer(nb: int = 3) -> None:
+def lancer(nb: int = 3, candidats: int = 8) -> None:
     conn = db()
     choisis = conn.execute(
         "SELECT * FROM clips WHERE statut IN ('segment','compile') AND score >= 7 "
-        "ORDER BY ajoute_le DESC LIMIT ?", (nb,)).fetchall()
+        "ORDER BY ajoute_le DESC LIMIT ?", (candidats,)).fetchall()
     if not choisis:
         print("Aucun clip récent noté 7/10 ou plus : réessaie plus tard.")
         return
     prets, origine = [], {c["id"]: c["statut"] for c in choisis}
     for c in choisis:
+        if len(prets) >= nb:
+            break
         statut = origine[c["id"]]
         try:
             brut = telecharger(c["url"], c["id"])
             conn.execute("UPDATE clips SET fichier_brut=? WHERE id=?", (brut, c["id"]))
             conn.commit()
-            preparer_segment(conn.execute("SELECT * FROM clips WHERE id=?", (c["id"],)).fetchone())
+            # essai : on accepte dès 5/10 pour voir le montage (les règles TikTok restent strictes)
+            preparer_segment(conn.execute("SELECT * FROM clips WHERE id=?", (c["id"],)).fetchone(), note_min=5)
             r = conn.execute("SELECT * FROM clips WHERE id=?", (c["id"],)).fetchone()
             if r["statut"] == "segment":
                 prets.append(r)

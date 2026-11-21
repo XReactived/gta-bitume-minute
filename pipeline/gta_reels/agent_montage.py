@@ -333,7 +333,7 @@ def couper(segment: str, sortie: Path, debut: float, fin: float | None) -> None:
     subprocess.run(cmd + [*ENCODAGE, str(sortie)], check=True, timeout=600)
 
 
-def preparer_segment(clip) -> None:
+def preparer_segment(clip, note_min: float | None = None) -> None:
     m = config()["montage"]
     dossier = DATA / "segments" / clip["id"]
     dossier.mkdir(parents=True, exist_ok=True)
@@ -354,7 +354,7 @@ def preparer_segment(clip) -> None:
                      ("erreur" if essais >= 3 else clip["statut"], f"jugement : essai {essais}", clip["id"]))
         conn.commit()
         return
-    note_min = float(m.get("note_min", 7))
+    note_min = float(m.get("note_min", 7)) if note_min is None else note_min
     if not ok or note < note_min:
         conn = db()
         motif = ("règles TikTok : " if not ok else f"note {note:.0f}/10 : ") + raison
