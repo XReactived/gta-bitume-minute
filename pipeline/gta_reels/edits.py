@@ -21,6 +21,7 @@ PLANS = DATA / "plans"
 SOURCES = DATA / "sources"          # vidéos officielles déposées à la main (jamais téléchargées par l'agent) :
                                     # GTA VI à la racine ou dans sources/gta6, GTA V et GTA Online dans sources/gta5
 PLANS_R = DATA / "plans_rockstar"   # plans découpés dans ces trailers (gardés et réutilisés)
+SONS = DATA / "sons"                # sons tendance déposés à la main (mp3) : l'edit est coupé pile sur leur beat
 DUREE_PLAN = 2.2  # chaque plan mis de côté dure 2,2 s (on en garde 0,8 à 1,8 s dans l'edit)
 COULEURS = ("eq=contrast=1.12:saturation=1.3:gamma=0.97,"
             "colorbalance=rs=-0.04:bs=0.07:rh=0.07:bh=-0.05,vignette=PI/5")  # look ciné : ombres bleues, lumières chaudes
@@ -255,7 +256,91 @@ MOTIFS = {"rapide": [2, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 1, 1, 4, 2, 2, 1, 1, 2, 4,
           "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4]}
 
 
-def _grille(bpm: int, motif: list[int], cible: float, maxi: float = 2.0) -> tuple[list[float], list[int]]:
+def _analyser_son(f: Path) -> dict | None:
+    """Tempo, premier temps et « drop » (moment où le son explose) d'un son, gardés dans un .json à côté."""
+    meta = Path(str(f) + ".json")
+    if meta.exists():
+        return json.loads(meta.read_text(encoding="utf-8"))
+    sr, hop = 22050, 512
+    try:
+        brut = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(f), "-t", "120", "-ac", "1", "-ar", str(sr),
+                               "-f", "s16le", "-"], capture_output=True, check=True, timeout=120).stdout
+    except Exception as e:
+        L.warning("Son %s illisible : %s", f.name, e)
+        return None
+    x = np.frombuffer(brut, dtype=np.int16).astype(np.float32) / 32768
+    n = len(x) // hop
+    if n < 400:  # moins de 10 s
+        return None
+    trames = x[:n * hop].reshape(n, hop)
+    # attaques : hausse d'énergie dans les aigus (percussions) et en global
+    spec = np.abs(np.fft.rfft(trames * np.hanning(hop), axis=1))
+    flux = np.maximum(np.diff(np.log1p(spec * 10), axis=0), 0).sum(axis=1)
+    flux = np.concatenate([[0], flux])
+    flux = (flux - flux.mean()) / (flux.std() + 1e-9)
+    fps = sr / hop  # ≈ 43 mesures par seconde
+    # tempo : autocorrélation des attaques entre 70 et 180 BPM, ramené entre 100 et 180 (les sons d'edit)
+    ac = np.correlate(flux, flux, "full")[n - 1:]
+    lags = np.arange(int(fps * 60 / 180), int(fps * 60 / 70) + 1)
+    lag = lags[np.argmax(ac[lags])]
+    # affinage sub-image de la période
+    periode = lag + (0.5 * (ac[lag - 1] - ac[lag + 1]) / (ac[lag - 1] - 2 * ac[lag] + ac[lag + 1] + 1e-9))
+    bpm = 60 * fps / periode
+    while bpm < 100:
+        bpm *= 2
+        periode /= 2
+    # phase : le décalage qui fait tomber la grille sur le plus d'attaques
+    phases = np.arange(0, periode, 0.5)
+    scores = [flux[np.round(np.arange(ph, n, periode)).astype(int).clip(0, n - 1)].sum() for ph in phases]
+    phase = phases[int(np.argmax(scores))] / fps
+    temps = 60 / bpm
+    # drop : le temps fort (début de mesure de 4 temps) où l'énergie monte le plus, pas dans les 2 premières secondes
+    rms = np.sqrt((trames ** 2).mean(axis=1))
+    def energie(t0, t1):
+        a, b = int(t0 * fps), int(t1 * fps)
+        return float(rms[max(a, 0):max(b, a + 1)].mean()) if a < n else 0.0
+    mesures = [phase + k * 4 * temps for k in range(int((n / fps - phase) / (4 * temps)))]
+    candidats = [(energie(t, t + 2) - energie(t - 2, t), t) for t in mesures if 2 <= t <= n / fps - 15]
+    drop = max(candidats)[1] if candidats else phase
+    d = {"bpm": round(float(bpm), 2), "phase": round(float(phase), 3), "drop": round(float(drop), 3),
+         "duree": round(n / fps, 1), "utilisations": 0}
+    meta.write_text(json.dumps(d), encoding="utf-8")
+    L.info("Son « %s » : %.1f BPM, drop à %.1f s", f.stem, bpm, drop)
+    return d
+
+
+def _choisir_son() -> tuple[Path, dict] | None:
+    """Le son déposé le moins utilisé (au hasard entre égaux)."""
+    SONS.mkdir(parents=True, exist_ok=True)
+    sons = [(f, _analyser_son(f)) for f in SONS.iterdir()
+            if f.suffix.lower() in (".mp3", ".m4a", ".wav", ".aac", ".ogg", ".mp4")]
+    sons = [(f, m) for f, m in sons if m]
+    if not sons:
+        return None
+    random.shuffle(sons)
+    return min(sons, key=lambda s: s[1].get("utilisations", 0))
+
+
+def _noter_son(f: Path, meta: dict) -> None:
+    meta = dict(meta, utilisations=meta.get("utilisations", 0) + 1)
+    Path(str(f) + ".json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t) // 60}:{int(t) % 60:02d}"
+
+
+def _tempo() -> tuple[float, str, tuple | None]:
+    """Tempo de l'edit et consigne de son pour la notif : un son déposé (calage exact) sinon un BPM au hasard."""
+    son = _choisir_son()
+    if son:
+        f, m = son
+        return m["bpm"], f"le son « {f.stem} » en le faisant démarrer à {_mmss(m['drop'])}", son
+    bpm = random.choice(BPM)
+    return bpm, "", None
+
+
+def _grille(bpm: float, motif: list[int], cible: float, maxi: float = 2.0) -> tuple[list[float], list[int]]:
     """Durées des plans calées sur les temps du son (arrondies à l'image, sans dérive), et le nombre de temps
     écoulés à chaque coupe (pour poser flashs et textes sur les temps forts)."""
     temps = 60 / bpm
@@ -341,14 +426,14 @@ def fabriquer_edit(genre: str | None = None) -> bool:
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
     cible = float(e.get("duree_s", 18))
-    bpm = random.choice(BPM)
+    bpm, consigne, son = _tempo()
     durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     if len(choisis) < 6:
         return False
     redac = _textes(choisis, genre)
-    redac["son"] = f"{redac['son']}, vers {bpm} BPM"
+    redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
 
     if paysage:  # peu de texte sur les edits de trailers : 2 phrases au plus
@@ -363,7 +448,10 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv) + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
-    return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls)
+    ok = _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls)
+    if ok and son:
+        _noter_son(*son)
+    return ok
 
 
 def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
@@ -444,7 +532,7 @@ def _fabriquer_comparatif() -> bool:
     g5 = _moins_utilises(_plans_jeu("gta5"), 20)
     g6 = _moins_utilises(_plans_jeu("gta6"), 20)
     cible = float(e.get("duree_s", 18))
-    bpm = random.choice(BPM)
+    bpm, consigne, son = _tempo()
     grille, cumuls = _grille(bpm, MOTIFS["lent"], cible)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
     for d in grille:
@@ -461,7 +549,7 @@ def _fabriquer_comparatif() -> bool:
         return False
     choisis = [p for paire in paires for p in paire]
     redac = _textes(choisis, "comparatif")
-    redac["son"] = f"{redac['son']}, vers {bpm} BPM"
+    redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:3] or ["GTA 5 VS GTA 6"]
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
@@ -484,8 +572,11 @@ def _fabriquer_comparatif() -> bool:
                "x=50:y=50,"
                f"drawtext=fontfile={TITRE}:text='GTA VI':fontsize=96:fontcolor=0xFF5FB4:borderw=5:bordercolor=black:"
                "x=50:y=h-160[v0]")
-    return _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
-                  cumuls, y_texte=960)
+    ok = _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
+                cumuls, y_texte=960)
+    if ok and son:
+        _noter_son(*son)
+    return ok
 
 
 def peut_faire_un_edit() -> bool:

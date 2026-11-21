@@ -139,6 +139,15 @@ def choisir(conn):
         ((dernier["format"] or "top") if dernier else "",)).fetchone()
 
 
+def _consigne_edit(conseil: str | None) -> str:
+    son = (conseil or "").split("] ", 1)[-1] or "phonk ou son du moment"
+    if son.startswith("le son « "):  # un des sons déposés sur le serveur : l'edit est coupé pile sur son beat
+        return (f"EDIT : dans TikTok, mets {son} (Ajuster / couper le son), et le son d'origine à 0. "
+                "Les coupes tombent alors pile sur le beat.\n\n")
+    return (f"EDIT : ajoute un son tendance ({son}) et mets le son d'origine à 0. Les coupes sont calées sur ce tempo : "
+            "fais glisser le son pour que son premier gros temps (le drop) tombe pile au début de la vidéo.\n\n")
+
+
 def lancer() -> int | None:
     conn = db()
     v = choisir(conn)
@@ -158,9 +167,7 @@ def lancer() -> int | None:
         else:
             notifier("Nouvelle vidéo dans tes brouillons TikTok" if DERNIER_STATUT == "SEND_TO_USER_INBOX"
                      else "Vidéo envoyée, TikTok la traite encore (quelques minutes)",
-                     (f"EDIT : ajoute un son tendance ({(v['conseil'] or '').split('] ', 1)[-1] or 'phonk ou son du moment'}) et mets le son "
-                      "d'origine à 0. Les coupes sont calées sur ce tempo : fais glisser le son pour que son premier "
-                      "gros temps (le drop) tombe pile au début de la vidéo.\n\n" if v["format"] == "edit" else "")
+                     (_consigne_edit(v['conseil']) if v["format"] == "edit" else "")
                      + f"Copie la légende ci-dessous, colle-la dans TikTok, puis publie :\n\n{v['legende']}",
                      4, ["clapper"])
         conn.commit()  # avant YouTube, qui écrit dans la base avec sa propre connexion
