@@ -9,14 +9,15 @@ from .commun import db, log
 L = log("remonter")
 
 
-def lancer(maxi: int = 15) -> None:
+def lancer(maxi: int = 25) -> None:
     conn = db()
     publies = {i for (c,) in conn.execute("SELECT clips FROM videos WHERE statut='publiee'") for i in (c or "").split(",")}
     n = conn.execute("UPDATE videos SET statut='expiree', erreur='ancien montage' WHERE statut='prete'").rowcount
     conn.commit()
     print(f"{n} vidéo(s) de l'ancien stock retirée(s) (jamais envoyées).")
     clips = [c for c in conn.execute(
-        "SELECT * FROM clips WHERE statut IN ('segment','compile') AND ajoute_le >= datetime('now','-4 days') "
+        "SELECT * FROM clips WHERE (statut IN ('segment','compile') OR (statut='refuse' AND erreur LIKE 'note 6/10%')) "
+        "AND ajoute_le >= datetime('now','-4 days') "
         "ORDER BY score DESC").fetchall() if c["id"] not in publies][:maxi]
     ok = 0
     for c in clips:
