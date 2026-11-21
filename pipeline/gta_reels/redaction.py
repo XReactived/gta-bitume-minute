@@ -177,7 +177,7 @@ SCHEMA_TEXTES = {
 }
 
 CONSIGNE_TEXTES = """Ton travail : écrire les textes d'une vidéo dont le format est déjà décidé.
-- top : compte à rebours ; chaque annonce commence par « Numéro N : » (le dernier clip est le numéro 1).
+- top : compte à rebours ; chaque annonce commence par « Numéro N : » (le dernier clip est le numéro 1). Le hook est posé sur le PREMIER clip (le numéro le plus élevé) : il présente le top en général (« LES CRASHS LES PLUS FOUS »), jamais un numéro précis (pas de « LE NUMÉRO 1 EST… »).
 - solo : une seule annonce courte, ou une phrase qui lance le clip.
 - serie : le hook et la légende indiquent la partie (ex. « PARTIE 1/3 »). Les annonces enchaînent l'histoire. « suite » annonce la partie suivante, sauf pour la dernière partie (alors vide).
 - duel : une annonce par clip (« Choix 1 : … », « Choix 2 : … »). « question » demande au public de trancher (« Lequel a fait le pire ? »).
