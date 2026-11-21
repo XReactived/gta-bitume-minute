@@ -40,16 +40,35 @@ def _cadre(camera) -> float:
     return min(max(x0, 0.0), 1 - lj)
 
 
+def _zone(camera) -> tuple[float, float, float]:
+    """Le plus grand cadre 16:9 de l'image qui évite la webcam : (x, y, taille), en fractions de l'image.
+    On garde le format paysage (comme les edits qui percent) : beaucoup moins d'agrandissement qu'un recadrage
+    vertical, donc une image bien plus nette."""
+    if not camera:
+        return 0.0, 0.0, 1.0
+    x, y, l, h = camera
+    options = [  # (taille, x, y) : sous la webcam, au-dessus, à sa droite, à sa gauche
+        (1 - (y + h), None, y + h), (y, None, 0.0), (1 - (x + l), x + l, None), (x, 0.0, None)]
+    t, x0, y0 = max(options, key=lambda o: o[0])
+    t = max(min(t, 1.0), 0.5)  # webcam énorme ou mal détectée : on garde au moins la moitié de l'image
+    x0 = (1 - t) / 2 if x0 is None else min(x0, 1 - t)  # centré dans l'espace libre
+    y0 = (1 - t) / 2 if y0 is None else min(y0, 1 - t)
+    return x0, y0, t
+
+
+NETTETE = "hqdn3d=1.5:1.5:4:4,scale=1920:1080:flags=lanczos,cas=0.5"  # nettoie la compression Twitch, puis affine
+
+
 def extraire_plans(clip, debut: float, fin: float, coupes, camera, nb: int = 3) -> int:
     """Met de côté les plus beaux plans du clip (de l'action, pas d'écran figé ni noir), au format vertical."""
     source = clip["fichier_brut"]
-    x0 = _cadre(camera)
+    x0, y0, taille = _zone(camera)
     energies = []
     prec = None
     for t, img in _images(source, debut, fin, 0.25):
         h0, w0 = img.shape[:2]
-        zone = img[:, int(x0 * w0):int((x0 + 0.316) * w0)]
-        gris = cv2.cvtColor(cv2.resize(zone, (90, 160)), cv2.COLOR_BGR2GRAY)
+        zone = img[int(y0 * h0):int((y0 + taille) * h0), int(x0 * w0):int((x0 + taille) * w0)]
+        gris = cv2.cvtColor(cv2.resize(zone, (160, 90)), cv2.COLOR_BGR2GRAY)
         if prec is not None:
             _, diff = cv2.threshold(cv2.absdiff(gris, prec), 25, 255, cv2.THRESH_BINARY)
             energies.append((t, diff.mean() / 255, gris.mean()))
@@ -81,9 +100,9 @@ def extraire_plans(clip, debut: float, fin: float, coupes, camera, nb: int = 3) 
     faits = 0
     for k, (mouv, t) in enumerate(gardes):
         sortie = PLANS / f"{clip['id']}_{k}.mp4"
-        filtre = (f"crop=ih*9/16:ih:iw*{x0:.4f}:0,scale=1080:1920,"
-                  f"scale=w='trunc(1080*{zoom}/2)*2':h='trunc(1920*{zoom}/2)*2':eval=frame,"
-                  f"crop=1080:1920:(iw-1080)/2:(ih-1920)/2,{COULEURS},setsar=1,fps=30")
+        filtre = (f"crop=trunc(iw*{taille:.4f}/2)*2:trunc(ih*{taille:.4f}/2)*2:iw*{x0:.4f}:ih*{y0:.4f},{NETTETE},"
+                  f"scale=w='trunc(1920*{zoom}/2)*2':h='trunc(1080*{zoom}/2)*2':eval=frame:flags=lanczos,"
+                  f"crop=1920:1080:(iw-1920)/2:(ih-1080)/2,{COULEURS},setsar=1,fps=30")
         try:
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t:.2f}", "-t", f"{DUREE_PLAN}",
                             "-i", source, "-vf", filtre, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
@@ -92,6 +111,7 @@ def extraire_plans(clip, debut: float, fin: float, coupes, camera, nb: int = 3) 
             Path(str(sortie) + ".json").write_text(json.dumps({
                 "clip": clip["id"], "streamer": clip["streamer"], "login": clip["streamer_login"],
                 "titre": clip["titre"] or "", "mouvement": round(float(mouv), 3), "note": clip["score"] or 0,
+                "paysage": True,
                 "cree": dt.datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False), encoding="utf-8")
             faits += 1
         except Exception as e:
@@ -532,7 +552,9 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     """Une version d'edit en plein écran : GTA VI ou GTA V/Online (paysage) ou plans de streams (vertical)."""
     e = config().get("edits") or {}
     officiel = genre in ("rockstar", "online")
-    paysage = officiel
+    # les plans de streams sont en paysage depuis qu'on évite la webcam sans recadrer en vertical (plus net) ;
+    # les anciens plans verticaux encore en réserve donnent un dernier edit vertical
+    paysage = officiel or all(p.get("paysage") for p in _plans_dispo(PLANS))
     W, H = (1920, 1080) if paysage else (1080, 1920)
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
