@@ -18,6 +18,8 @@ from .recadrage import _images
 
 L = log("edits")
 PLANS = DATA / "plans"
+SOURCES = DATA / "sources"          # trailers officiels déposés à la main (jamais téléchargés par l'agent)
+PLANS_R = DATA / "plans_rockstar"   # plans découpés dans ces trailers (gardés et réutilisés)
 DUREE_PLAN = 2.2  # chaque plan mis de côté dure 2,2 s (on en garde 0,8 à 1,8 s dans l'edit)
 COULEURS = ("eq=contrast=1.12:saturation=1.3:gamma=0.97,"
             "colorbalance=rs=-0.04:bs=0.07:rh=0.07:bh=-0.05,vignette=PI/5")  # look ciné : ombres bleues, lumières chaudes
@@ -95,13 +97,70 @@ def extraire_plans(clip, debut: float, fin: float, coupes, camera, nb: int = 3) 
     return faits
 
 
-def _plans_dispo() -> list[dict]:
+def _plans_dispo(dossier: Path = PLANS) -> list[dict]:
     out = []
-    for j in PLANS.glob("*.mp4.json"):
+    for j in dossier.glob("*.mp4.json"):
         f = Path(str(j)[:-5])
         if f.exists():
             out.append(dict(json.loads(j.read_text(encoding="utf-8")), fichier=str(f)))
     return out
+
+
+def _coupes_scenes(video: str) -> list[float]:
+    r = subprocess.run(["ffmpeg", "-i", video, "-vf", "select='gt(scene,0.3)',showinfo", "-an", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=1800)
+    return [float(x.split("pts_time:")[1].split()[0]) for x in r.stderr.splitlines() if "pts_time:" in x]
+
+
+def importer_trailers() -> int:
+    """Découpe chaque trailer déposé dans data/sources en plans (un par changement de scène), au format paysage,
+    et garde les plus beaux (ni noirs, ni cartons de texte, avec du mouvement)."""
+    from .agent_montage import duree
+    SOURCES.mkdir(parents=True, exist_ok=True)
+    PLANS_R.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for src in sorted(SOURCES.iterdir()):
+        if src.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v") or Path(str(src) + ".fait").exists():
+            continue
+        d = duree(str(src))
+        bornes = [0.0] + _coupes_scenes(str(src)) + [d]
+        faits = 0
+        for k, (a, b) in enumerate(zip(bornes, bornes[1:])):
+            if b - a < 1.0:
+                continue
+            t0, t1 = a + 0.12, min(b - 0.08, a + 0.12 + DUREE_PLAN)
+            lum, mouv, prec, n = [], [], None, 0
+            for _, img in _images(str(src), t0, t1, 0.25):
+                h0, w0 = img.shape[:2]
+                gris = cv2.cvtColor(cv2.resize(img, (160, 90)), cv2.COLOR_BGR2GRAY)
+                bande = gris[12:78]  # sans les éventuelles bandes noires du format cinéma
+                lum.append(bande.mean())
+                if prec is not None:
+                    _, diff = cv2.threshold(cv2.absdiff(bande, prec), 20, 255, cv2.THRESH_BINARY)
+                    mouv.append(diff.mean() / 255)
+                prec = bande
+            if not lum or np.mean(lum) < 35:  # plan noir, fondu ou carton
+                continue
+            sortie = PLANS_R / f"{src.stem[:40]}_{k:03d}.mp4"
+            try:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t0:.2f}", "-t", f"{t1 - t0:.2f}",
+                                "-i", str(src), "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                                "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30", "-c:v", "libx264", "-preset",
+                                "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000",
+                                "-ac", "2", str(sortie)], check=True, timeout=300)
+            except Exception as e:
+                L.warning("Plan de trailer non extrait : %s", e)
+                continue
+            Path(str(sortie) + ".json").write_text(json.dumps({
+                "clip": f"{src.stem[:40]}_{k:03d}", "source": src.stem, "streamer": "Rockstar Games",
+                "login": "", "titre": src.stem, "mouvement": round(float(np.mean(mouv or [0])), 3), "note": 8,
+                "duree": round(t1 - t0, 2), "utilisations": 0, "paysage": True,
+                "cree": dt.datetime.now().isoformat(timespec="seconds")}), encoding="utf-8")
+            faits += 1
+        Path(str(src) + ".fait").write_text(str(faits), encoding="utf-8")
+        L.info("Trailer « %s » : %d plans gardés", src.name, faits)
+        total += faits
+    return total
 
 
 SCHEMA = {"type": "object", "properties": {
@@ -135,38 +194,59 @@ def _textes(plans: list[dict]) -> dict:
                 "son": "phonk ou son tendance du moment"}
 
 
-def fabriquer_edit() -> bool:
-    """Assemble un edit à partir des plans mis de côté (au moins 12 plans venant de 4 clips différents)."""
+def _choisir_type() -> str | None:
+    """« rockstar » (trailers, en paysage) ou « streams » (plans des clips, en vertical), en alternant."""
+    r_ok = len(_plans_dispo(PLANS_R)) >= 12
+    s_dispo = _plans_dispo(PLANS)
+    s_ok = len(s_dispo) >= 12 and len({p["clip"] for p in s_dispo}) >= 4
+    dernier = db().execute("SELECT conseil FROM videos WHERE format='edit' ORDER BY id DESC LIMIT 1").fetchone()
+    avant = "rockstar" if dernier and (dernier[0] or "").startswith("[rockstar]") else "streams"
+    if r_ok and s_ok:
+        return "streams" if avant == "rockstar" else "rockstar"
+    return "rockstar" if r_ok else "streams" if s_ok else None
+
+
+def fabriquer_edit(genre: str | None = None) -> bool:
+    """Assemble un edit : plans des trailers Rockstar (paysage, comme les edits qui percent) ou des streams."""
     from .agent_montage import ENCODAGE, FONT, TITRE, _lignes_px, duree
     from .controle import verifier
 
     e = config().get("edits") or {}
-    dispo = _plans_dispo()
-    clips = {p["clip"] for p in dispo}
-    if len(dispo) < 12 or len(clips) < 4:
+    genre = genre or _choisir_type()
+    if not genre:
         return False
-    # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
-    dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
+    paysage = genre == "rockstar"
+    W, H = (1920, 1080) if paysage else (1080, 1920)
+    dispo = _plans_dispo(PLANS_R if paysage else PLANS)
+    if paysage:  # les plans des trailers resservent : les moins utilisés d'abord, dans un ordre varié
+        random.shuffle(dispo)
+        dispo.sort(key=lambda p: p.get("utilisations", 0))
+        dispo = dispo[:40]
+        dispo.sort(key=lambda p: p["mouvement"], reverse=True)
+    else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
+        dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
     cible = float(e.get("duree_s", 18))
-    rythme = [1.5, 0.9, 1.2, 0.8, 1.6, 1.0, 0.9, 1.3, 0.8, 1.1, 1.7, 0.9, 1.2, 1.0, 1.8]
-    choisis, dernier = [], None
-    while dispo and sum(rythme[:len(choisis)]) < cible and len(choisis) < len(rythme):
+    rythme = [1.5, 0.9, 1.2, 0.8, 1.6, 1.0, 0.9, 1.3, 0.8, 1.1, 1.7, 0.9, 1.2, 1.0, 1.8, 0.9, 1.3, 1.1, 1.5, 1.0]
+    choisis, durees, dernier = [], [], None
+    while dispo and sum(durees) < cible and len(choisis) < len(rythme):
         p = next((x for x in dispo if x["clip"] != dernier), dispo[0])
         dispo.remove(p)
         choisis.append(p)
+        durees.append(min(rythme[len(durees)], p.get("duree", DUREE_PLAN) - 0.05))
         dernier = p["clip"]
-    durees = rythme[:len(choisis)]
     total = sum(durees)
     redac = _textes(choisis)
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
 
+    if paysage:  # peu de texte sur les edits de trailers : 2 phrases au plus
+        textes = textes[:2]
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
     entrees, chaine = [], []
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-t", f"{d:.2f}", "-i", p["fichier"]]
-        chaine.append(f"[{i}:v]setsar=1,fps=30,trim=duration={d:.2f},setpts=PTS-STARTPTS[v{i}];"
+        chaine.append(f"[{i}:v]scale={W}:{H},setsar=1,fps=30,trim=duration={d:.2f},setpts=PTS-STARTPTS[v{i}];"
                       f"[{i}:a]atrim=duration={d:.2f},asetpts=PTS-STARTPTS,"
                       f"afade=t=in:d=0.08,afade=t=out:st={max(d - 0.08, 0):.2f}:d=0.08,volume=0.4[a{i}];")
     n = len(choisis)
@@ -181,9 +261,9 @@ def fabriquer_edit() -> bool:
     # les phrases chocs, une après l'autre, réparties sur la durée (la dernière jusqu'à la fin)
     tranche = total / len(textes)
     for k, texte in enumerate(textes):
-        lignes, taille = _lignes_px(texte, 190, 940)
+        lignes, taille = _lignes_px(texte, 150 if paysage else 190, 1500 if paysage else 940)
         t0, t1 = k * tranche + 0.15, (k + 1) * tranche if k < len(textes) - 1 else total
-        y = 820 - len(lignes) * taille * 0.55
+        y = (H * 0.5 if paysage else 820) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
             f.write_text(ligne, encoding="utf-8")
@@ -192,7 +272,7 @@ def fabriquer_edit() -> bool:
                        f"x=(w-text_w)/2:y={y + j * taille * 1.05:.0f}:enable='between(t,{t0:.2f},{t1:.2f})'[t{k}_{j}]")
             v = f"t{k}_{j}"
     graphe += (f";[{v}]noise=alls=5:allf=t,drawtext=fontfile={FONT}:text='Bitume Minute':fontsize=34:"
-               f"fontcolor=white@0.55:x=(w-text_w)/2:y=h-150[vfin]")
+               f"fontcolor=white@0.55:x=(w-text_w)/2:y=h-{70 if paysage else 150}[vfin]")
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", graphe,
                     "-map", "[vfin]", "-map", "[a]", *ENCODAGE, "-movflags", "+faststart", sortie.name],
                    check=True, cwd=dossier, timeout=900)
@@ -203,7 +283,8 @@ def fabriquer_edit() -> bool:
         if len(h) > 1 and h.lower() not in vus:
             vus.add(h.lower())
             tags.append(h)
-    credits = " ".join(sorted({f"twitch.tv/{p['login']}" for p in choisis}))
+    credits = ("Rockstar Games (trailer officiel, edit de fan)" if paysage
+               else " ".join(sorted({f"twitch.tv/{p['login']}" for p in choisis})))
     legende = f"{redac['legende']}\n\n🎥 Images : {credits}\n{' '.join(tags[:5])}"[:2200]
     ok, problemes = verifier(sortie, [str(sortie)], [], "edit",
                              {"hook": " / ".join(textes), "legende_complete": legende, "sans_voix": True})
@@ -212,11 +293,17 @@ def fabriquer_edit() -> bool:
         "INSERT INTO videos (fichier, clips, score, hook, legende, format, duree, statut, erreur, conseil) "
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (str(sortie), ",".join(sorted({p["clip"] for p in choisis})), 7.5, " ".join(textes), legende, "edit",
-         duree(str(sortie)), "prete" if ok else "rejetee", " | ".join(problemes)[:500] or None, redac["son"]))
+         duree(str(sortie)), "prete" if ok else "rejetee", " | ".join(problemes)[:500] or None,
+         f"[{genre}] {redac['son']}"))
     conn.commit()
-    for p in choisis:  # un plan ne sert qu'une fois
-        Path(p["fichier"]).unlink(missing_ok=True)
-        Path(p["fichier"] + ".json").unlink(missing_ok=True)
+    for p in choisis:
+        if paysage:  # plan de trailer : on note qu'il a servi (il resservira plus tard, mélangé autrement)
+            meta = {k: v for k, v in p.items() if k != "fichier"}
+            meta["utilisations"] = meta.get("utilisations", 0) + 1
+            Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        else:  # plan de stream : ne sert qu'une fois
+            Path(p["fichier"]).unlink(missing_ok=True)
+            Path(p["fichier"] + ".json").unlink(missing_ok=True)
     L.info("Edit %s : %d plans, %.0f s, %s", "prêt" if ok else "refusé par le contrôle qualité", n, total,
            " / ".join(textes) if ok else " | ".join(problemes))
     return ok

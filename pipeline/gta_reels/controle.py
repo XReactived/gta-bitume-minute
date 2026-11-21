@@ -100,8 +100,9 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str,
                 f"3) Coupe les temps morts (les images sont prises à {', '.join(f'{x:.0f} s' for x in instants)}) : "
                 "debut_s = la seconde où garder le début, pour que la vidéo démarre presque directement sur "
                 "l'action (garde 1 à 2 s de contexte, 0 si le début est déjà bon) ; fin_s = la seconde où le moment est "
-                f"terminé (supprime ce qui traîne après, {duree:.0f} si la fin est bonne). Ne coupe jamais une phrase "
-                "ou le moment clé : en cas de doute, garde."))}],
+                f"terminé : environ 2 à 4 s après le moment fort ou la réaction du streamer. Supprime tout ce qui traîne "
+                "après (le personnage qui se relève, marche ou reste planté, le streamer qui passe à autre chose) : "
+                "sur TikTok, une fin molle fait décrocher. Ne coupe jamais une phrase drôle ni le moment clé."))}],
         )
         r = json.loads(next(b.text for b in rep.content if b.type == "text"))
         return (bool(r["autorise"]), float(r["note"]), r["raison"],
@@ -208,7 +209,8 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
                     + ("C'est un « edit » : enchaînement voulu de plans de jeu courts (sans webcam ni sous-titres), "
                        "avec de gros mots façon affiche et quelques flashs blancs aux coupes ; le son sera ajouté "
                        "dans TikTok. Vérifie surtout que les textes sont lisibles, sans faute, et que les images "
-                       "sont belles (pas de menu, d'écran noir ou d'interface de stream). " if fmt == "edit" else "")
+                       "sont belles (pas de menu, d'écran noir ou d'interface de stream). Un edit de trailer peut être en "
+                       "paysage 16:9 avec des bandes noires de cinéma : c'est voulu. " if fmt == "edit" else "")
                     + "Note : sur le premier clip, le gros texte est le titre de la vidéo (accroche générale) ; dans "
                     "un top ou un duel, un petit texte jaune en dessous donne le numéro et le streamer (pas sur un "
                     "clip solo). Ce n'est pas une erreur si le titre parle de la vidéo entière. "
