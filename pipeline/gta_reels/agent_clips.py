@@ -61,15 +61,18 @@ def chercher() -> list[dict]:
             clip["_login"] = u["login"]
             clips[clip["id"]] = clip
 
-    if c.get("categorie_gta6_fr") and gta_id:
+    # Meilleurs clips de toute la catégorie GTA VI, dans chaque langue choisie (fr, en…)
+    langues = c.get("langues") or ({c.get("langue", "fr"): c["max_par_passage"]} if c.get("categorie_gta6_fr") else {})
+    if langues and gta_id:
         for clip in tw.get("clips", game_id=gta_id, started_at=depuis, first=100):
-            if clip.get("language") == c["langue"]:
+            if clip.get("language") in langues:
                 clip["_login"] = clip["broadcaster_name"].lower()
                 clips.setdefault(clip["id"], clip)
 
+    vues_min = c.get("vues_minimum_par_langue") or {}
     exclus = {e.lower() for e in c.get("exclus") or []}
     retenus = [x for x in clips.values()
-               if x["view_count"] >= c["vues_minimum"]
+               if x["view_count"] >= vues_min.get(x.get("language") or "fr", c["vues_minimum"])
                and x["_login"] not in exclus and x["broadcaster_name"].lower() not in exclus]
     retenus.sort(key=_score, reverse=True)
     L.info("%d clips trouvés, %d au-dessus du seuil de vues", len(clips), len(retenus))
@@ -89,17 +92,23 @@ def telecharger(url: str, clip_id: str) -> str:
 def lancer() -> int:
     c = config()["clips"]
     conn = db()
-    nouveaux = 0
+    nouveaux, par_langue = 0, {}
+    quotas = c.get("langues") or {}
     for clip in chercher():
         if nouveaux >= c["max_par_passage"]:
             break
+        langue = clip.get("language") or "fr"
+        if langue in quotas and par_langue.get(langue, 0) >= quotas[langue]:
+            continue  # quota de cette langue atteint pour ce passage (garde la page majoritairement française)
         if conn.execute("SELECT 1 FROM clips WHERE id=?", (clip["id"],)).fetchone():
             continue
         conn.execute(
-            "INSERT INTO clips (id, url, streamer, streamer_login, titre, vues, cree_le, duree, score) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO clips (id, url, streamer, streamer_login, titre, vues, cree_le, duree, score, langue) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (clip["id"], clip["url"], clip["broadcaster_name"], clip["_login"], clip["title"],
-             clip["view_count"], clip["created_at"], clip["duration"], _score(clip)),
+             clip["view_count"], clip["created_at"], clip["duration"], _score(clip), langue),
         )
+        par_langue[langue] = par_langue.get(langue, 0) + 1
         try:
             chemin = telecharger(clip["url"], clip["id"])
             conn.execute("UPDATE clips SET statut='telecharge', fichier_brut=? WHERE id=?", (chemin, clip["id"]))

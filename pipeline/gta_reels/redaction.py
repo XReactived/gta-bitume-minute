@@ -9,7 +9,7 @@ from .commun import config, db, log, secours
 
 L = log("redaction")
 
-CHARTE = """Tu es le rédacteur en chef de « Bitume Minute », une page fan TikTok française (non affiliée à Rockstar Games) qui publie les meilleurs moments de streamers sur GTA 6, présentés par une voix-off.
+CHARTE = """Tu es le rédacteur en chef de « Bitume Minute », une page fan TikTok française (non affiliée à Rockstar Games) qui publie les meilleurs moments de streamers sur GTA 6 (surtout français, et aussi les plus gros streamers américains, sous-titrés en français), présentés par une voix-off en français.
 Règles permanentes :
 - Ne promets rien que les clips ne montrent pas. Jamais « officiel », « confirmé », « exclu » : on n'est pas Rockstar.
 - Jamais de leak, de rumeur, d'astuce pour jouer avant la sortie ou de triche. Aucun spoiler de l'histoire dans un titre.
@@ -81,7 +81,8 @@ Tu n'es pas obligé d'utiliser tous les clips : garde pour plus tard ceux qui ir
 def planifier(clips: list[dict], dmin: float, dmax: float) -> list[dict]:
     """clips : {id, streamer, titre, transcription, duree, score}. Renvoie [{format, parties: [[ids]]}]."""
     liste = "\n\n".join(
-        f"id={c['id']} — {c['streamer']} — {c['duree']:.0f} s — note de Claude {c['score']:.0f}/10\n"
+        f"id={c['id']} — {c['streamer']}{' (américain, sous-titré en français)' if c.get('langue', 'fr') != 'fr' else ''}"
+        f" — {c['duree']:.0f} s — note de Claude {c['score']:.0f}/10\n"
         f"Titre : {c['titre']}\nCe qui est dit : {(c['transcription'] or '(pas de parole)')[:600]}"
         for c in clips
     )

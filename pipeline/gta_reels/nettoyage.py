@@ -39,7 +39,8 @@ def lancer() -> None:
             if d.exists():
                 _suppr(d); n += 1
     for v in conn.execute("SELECT fichier FROM videos WHERE (statut IN ('publiee','erreur') "
-                          "AND creee_le < datetime('now','-3 days')) OR statut IN ('expiree','rejetee')"):
+                          "AND creee_le < datetime('now','-3 days')) OR statut IN ('expiree','rejetee') "
+                          "OR (statut='essai' AND creee_le < datetime('now','-2 days'))"):
         d = Path(v["fichier"]).parent
         if d.exists():
             _suppr(d); n += 1

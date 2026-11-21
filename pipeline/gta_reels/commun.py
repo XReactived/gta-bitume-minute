@@ -85,6 +85,10 @@ def db() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {typ}")
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.execute("ALTER TABLE clips ADD COLUMN langue TEXT DEFAULT 'fr'")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 

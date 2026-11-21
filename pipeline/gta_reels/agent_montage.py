@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
-from .sous_titres import a_deja_des_sous_titres
+from .sous_titres import a_deja_des_sous_titres, traduire
 from .controle import juger_clip, trouver_camera, verifier
 from .voix import dire
 
@@ -15,7 +15,7 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _whisper = None
 
 
-def transcrire(video: str, indice: str = "") -> list[dict]:
+def transcrire(video: str, indice: str = "", langue: str = "fr") -> list[dict]:
     """Retourne les mots avec leurs horodatages (Whisper local, gratuit).
 
     Chaque mot a "sur" = False quand Whisper n'est pas confiant (bruit du jeu, musique, dialogue anglais
@@ -28,9 +28,10 @@ def transcrire(video: str, indice: str = "") -> list[dict]:
     if _whisper is None:
         _whisper = WhisperModel(m.get("modele_whisper", "large-v3-turbo"), device="cpu", compute_type="int8")
     segments, _ = _whisper.transcribe(
-        video, language="fr", word_timestamps=True, vad_filter=True, beam_size=5,
+        video, language=langue, word_timestamps=True, vad_filter=True, beam_size=5,
         condition_on_previous_text=False,  # évite les phrases inventées qui se répètent
-        initial_prompt=f"Stream Twitch en français sur GTA 6. {indice}".strip(),
+        initial_prompt=(f"Stream Twitch en français sur GTA 6. {indice}" if langue == "fr"
+                        else f"Twitch stream playing GTA 6. {indice}").strip(),
     )
     mots = []
     for seg in segments:
@@ -87,6 +88,48 @@ def ecrire_ass(mots: list[dict], chemin: Path) -> None:
                 ("{\\c&H00E5FF&\\fscx112\\fscy112}" + propre(x["mot"]) + "{\\r}") if x is w else propre(x["mot"])
                 for x in bloc)
             lignes.append(f"Dialogue: 0,{_ts(debut)},{_ts(fin)},Def,{texte}")
+    chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
+
+
+def phrases(mots: list[dict], max_mots: int = 7) -> list[dict]:
+    """Regroupe les mots sûrs en phrases courtes (coupées aux pauses et à la ponctuation)."""
+    res, cur = [], []
+    for w in mots:
+        if not w.get("sur", True):
+            if cur:
+                res.append(cur)
+            cur = []
+            continue
+        if cur and (len(cur) >= max_mots or w["t0"] - cur[-1]["t1"] > 0.6):
+            res.append(cur)
+            cur = []
+        cur.append(w)
+        if w["mot"][-1:] in ".?!":
+            res.append(cur)
+            cur = []
+    if cur:
+        res.append(cur)
+    return [{"t0": p[0]["t0"], "t1": p[-1]["t1"], "texte": " ".join(w["mot"] for w in p)} for p in res]
+
+
+def ecrire_ass_phrases(blocs: list[dict], chemin: Path) -> None:
+    """Sous-titres traduits : une phrase à la fois (le mot par mot n'a pas de sens après traduction)."""
+    entete = (
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
+        "Style: Def,DejaVu Sans,66,&H00FFFFFF,&H00000000,&H96000000,1,1,6,3,2,70,70,520\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+    )
+    lignes = []
+    for k, b in enumerate(blocs):
+        fin = max(b["t1"], b["t0"] + 1.0)  # au moins 1 s pour avoir le temps de lire
+        if k + 1 < len(blocs):
+            fin = min(fin, blocs[k + 1]["t0"] - 0.01)
+        if fin <= b["t0"] or not b["texte"].strip():
+            continue
+        texte = b["texte"].upper().replace("{", "").replace("}", "").replace("\\", "")
+        lignes.append(f"Dialogue: 0,{_ts(b['t0'])},{_ts(fin)},Def,{texte}")
     chemin.write_text(entete + "\n".join(lignes) + "\n", encoding="utf-8")
 
 
@@ -287,11 +330,12 @@ def preparer_segment(clip) -> None:
     avec_st = m["sous_titres"] and not a_deja_des_sous_titres(clip["fichier_brut"], clip["streamer_login"],
                                                                duree(clip["fichier_brut"]))
     # transcription toujours faite : Claude en a besoin. Le pseudo et le titre aident Whisper à bien écrire.
-    mots = transcrire(clip["fichier_brut"], f"Streamer : {clip['streamer']}. {clip['titre'] or ''}")
+    langue = (clip["langue"] if "langue" in clip.keys() else None) or "fr"
+    mots = transcrire(clip["fichier_brut"], f"Streamer : {clip['streamer']}. {clip['titre'] or ''}", langue)
     # Claude juge le clip : règles TikTok (nudité, sexe, gore…) et intérêt sur 10. Seuls les bons clips passent.
     d_brut = duree(clip["fichier_brut"])
     ok, note, raison, debut, fin = juger_clip(clip["fichier_brut"], d_brut, clip["streamer"],
-                                              clip["titre"] or "", _horodater(mots))
+                                              clip["titre"] or "", _horodater(mots), langue)
     if ok is None:  # Claude indisponible : on ne monte rien sans jugement, le clip attend le prochain passage
         essais = int((clip["erreur"] or "").split("essai ")[-1]) + 1 if "jugement : essai " in (clip["erreur"] or "") else 1
         conn = db()  # au bout de 3 échecs, on abandonne ce clip pour ne pas payer indéfiniment
@@ -319,7 +363,15 @@ def preparer_segment(clip) -> None:
     ass = None
     if avec_st and sum(w["sur"] for w in mots) >= 3:
         ass = dossier / "subs.ass"
-        ecrire_ass(mots, ass)
+        if langue == "fr":
+            ecrire_ass(mots, ass)
+        else:  # streamer étranger : sous-titres traduits en français, phrase par phrase
+            blocs = phrases(mots)
+            trad = traduire([b["texte"] for b in blocs], clip["streamer"])
+            if trad is None:
+                ass = None
+            else:
+                ecrire_ass_phrases([dict(b, texte=t) for b, t in zip(blocs, trad)], ass)
     sortie = dossier / "segment.mp4"
     rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None,
                    camera, debut, fin if fin < d_brut - 0.05 else None)
@@ -337,7 +389,8 @@ _dernier_plan = 0.0
 
 def _infos(c) -> dict:
     return {"id": c["id"], "streamer": c["streamer"], "login": c["streamer_login"], "titre": c["titre"] or "",
-            "transcription": c["transcription"] or "", "duree": c["duree_segment"] or 0, "score": c["score"] or 0}
+            "transcription": c["transcription"] or "", "duree": c["duree_segment"] or 0, "score": c["score"] or 0,
+            "langue": (c["langue"] if "langue" in c.keys() else None) or "fr"}
 
 
 CARTES_PAR_CLIP = {"top", "recap", "serie", "duel", "astuce"}

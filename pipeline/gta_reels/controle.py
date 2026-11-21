@@ -65,7 +65,7 @@ REGLES_TIKTOK = (
 
 
 def juger_clip(video: str, duree: float, streamer: str, titre: str,
-               transcription: str) -> tuple[bool | None, float, str, float, float]:
+               transcription: str, langue: str = "fr") -> tuple[bool | None, float, str, float, float]:
     """Claude regarde 8 images et lit ce qui est dit, puis :
     - vérifie les règles TikTok (refus = le clip n'est jamais utilisé),
     - note l'intérêt du clip sur 10 pour un public TikTok (drôle, surprenant, compréhensible sans contexte).
@@ -86,7 +86,12 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str,
                 "required": ["autorise", "note", "raison", "debut_s", "fin_s"], "additionalProperties": False}}},
             messages=[{"role": "user", "content": _image_et_texte(image, (
                 f"Voici 8 images d'un clip Twitch de {streamer} sur GTA 6 ({duree:.0f} s), titre « {titre} ».\n"
-                f"Ce qui est dit (transcription automatique, avec repères de temps) : {transcription[:1500] or '(rien)'}\n\n"
+                f"Ce qui est dit (transcription automatique, avec repères de temps) : {transcription[:1500] or '(rien)'}\n"
+                + ("" if langue == "fr" else
+                   "Ce streamer parle anglais : notre public est français et verra des sous-titres traduits. "
+                   "Note plus sévèrement un clip dont l'intérêt repose sur un long discours ou un jeu de mots "
+                   "anglais ; favorise ce qui se comprend à l'image (action, crash, réaction, situation absurde).\n")
+                + "\n"
                 f"1) Règles : {REGLES_TIKTOK} Au moindre doute sur de la nudité ou du contenu sexuel, autorise = false.\n"
                 "2) Note de 0 à 10 l'intérêt de ce clip pour une vidéo TikTok grand public, en étant exigeant : "
                 "8-10 = vraiment drôle, surprenant ou spectaculaire, compréhensible sans connaître le streamer ; "

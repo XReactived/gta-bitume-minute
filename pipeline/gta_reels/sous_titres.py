@@ -57,6 +57,34 @@ def _demander_a_claude(image: bytes) -> bool:
     return bool(json.loads(next(b.text for b in rep.content if b.type == "text"))["sous_titres"])
 
 
+def traduire(phrases: list[str], streamer: str) -> list[str] | None:
+    """Traduit en français les phrases d'un streamer anglophone (une traduction par phrase, même ordre).
+    Renvoie None si la traduction échoue : on ne met alors pas de sous-titres."""
+    if not phrases:
+        return []
+    modele = config()["tiktok"].get("modele_controle") or config()["tiktok"].get("modele_ia", "claude-opus-5-5")
+    try:
+        rep = anthropic.Anthropic().beta.messages.create(
+            model=modele, max_tokens=4000, **secours(modele),
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+                "type": "object", "properties": {"traductions": {"type": "array", "items": {"type": "string"}}},
+                "required": ["traductions"], "additionalProperties": False}}},
+            messages=[{"role": "user", "content": (
+                f"Voici ce que dit le streamer américain {streamer} pendant un clip GTA 6, découpé en "
+                f"{len(phrases)} morceaux. Traduis chaque morceau en français parlé, naturel et court, comme des "
+                "sous-titres TikTok (langage familier d'un jeune, garde l'humour et l'énergie, adoucis les gros "
+                "mots). Garde les noms propres. Une traduction par morceau, dans le même ordre, exactement "
+                f"{len(phrases)} éléments.\n\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(phrases)))}],
+        )
+        trad = json.loads(next(b.text for b in rep.content if b.type == "text"))["traductions"]
+        if len(trad) != len(phrases):
+            raise ValueError(f"{len(trad)} traductions pour {len(phrases)} phrases")
+        return [t.strip() for t in trad]
+    except Exception as e:
+        L.warning("Traduction impossible (%s) : clip sans sous-titres", e)
+        return None
+
+
 def a_deja_des_sous_titres(video: str, login: str, duree: float) -> bool:
     login = login.lower()
     if login in {x.lower() for x in config()["montage"].get("streamers_sans_sous_titres") or []}:

@@ -23,9 +23,16 @@ clips:
   exclus: []
   # Ne garder que les clips joués sur GTA VI (sinon tout le contenu des streamers)
   seulement_gta6: true
-  # Prendre aussi les meilleurs clips FR de toute la catégorie GTA VI
-  categorie_gta6_fr: true
-  langue: fr
+  # Prendre aussi les meilleurs clips de toute la catégorie GTA VI, par langue,
+  # avec le nombre maximum de clips par passage pour chaque langue.
+  # en = streamers américains/anglais : sous-titres traduits en français automatiquement.
+  langues:
+    fr: 7
+    en: 3
+  # Vues minimum par langue (les clips anglais ont beaucoup plus de vues : on est plus exigeant)
+  vues_minimum_par_langue:
+    fr: 300
+    en: 3000
   fenetre_heures: 48        # ne cherche que les clips des dernières 48 h
   vues_minimum: 300         # un clip doit déjà avoir plu un minimum
   max_par_passage: 10       # clips téléchargés à chaque passage (Claude ne garde ensuite que les meilleurs)
