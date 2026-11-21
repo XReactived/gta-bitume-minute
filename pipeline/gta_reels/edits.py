@@ -302,12 +302,8 @@ MOTIFS = {"rapide": [2, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 1, 1, 4, 2, 2, 1, 1, 2, 4,
           "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4]}
 
 
-def _analyser_son(f: Path) -> dict | None:
-    """Tempo, premier temps et « drop » (moment où le son explose) d'un son, gardés dans un .json à côté."""
-    meta = Path(str(f) + ".json")
-    if meta.exists():
-        return json.loads(meta.read_text(encoding="utf-8"))
-    sr, hop = 22050, 512
+def _attaques(f: Path, sr: int = 22050, hop: int = 256) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Courbe des attaques (coups de batterie, notes) et volume, ~86 mesures par seconde."""
     try:
         brut = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(f), "-t", "120", "-ac", "1", "-ar", str(sr),
                                "-f", "s16le", "-"], capture_output=True, check=True, timeout=120).stdout
@@ -316,42 +312,75 @@ def _analyser_son(f: Path) -> dict | None:
         return None
     x = np.frombuffer(brut, dtype=np.int16).astype(np.float32) / 32768
     n = len(x) // hop
-    if n < 400:  # moins de 10 s
+    if n < 10 * sr / hop:  # moins de 10 s
         return None
     trames = x[:n * hop].reshape(n, hop)
-    # attaques : hausse d'énergie dans les aigus (percussions) et en global
-    spec = np.abs(np.fft.rfft(trames * np.hanning(hop), axis=1))
-    flux = np.maximum(np.diff(np.log1p(spec * 10), axis=0), 0).sum(axis=1)
-    flux = np.concatenate([[0], flux])
-    flux = (flux - flux.mean()) / (flux.std() + 1e-9)
-    fps = sr / hop  # ≈ 43 mesures par seconde
-    # tempo : autocorrélation des attaques entre 70 et 180 BPM, ramené entre 100 et 180 (les sons d'edit)
+    spec = np.log1p(10 * np.abs(np.fft.rfft(trames * np.hanning(hop), axis=1)))
+    flux = np.concatenate([[0], np.maximum(np.diff(spec, axis=0), 0).sum(axis=1)])
+    flux = np.maximum(flux - np.convolve(flux, np.ones(16) / 16, "same"), 0)  # garde les pics, pas le fond
+    flux /= flux.std() + 1e-9
+    return flux, np.sqrt((trames ** 2).mean(axis=1)), sr / hop
+
+
+def _caler(flux: np.ndarray, fps: float, bpm0: float, t0: float, t1: float) -> tuple[float, float, float]:
+    """Cherche le tempo exact (±3 %) et le placement des temps qui tombent le mieux sur les attaques entre t0 et t1.
+    Renvoie (bpm, premier temps, part des attaques fortes qui tombent sur un temps ou un demi-temps)."""
+    lisse = np.maximum.reduce([np.roll(flux, k) for k in (-1, 0, 1)])  # tolérance ±12 ms
+    meilleur = (-1.0, bpm0, 0.0)
+    for bpm in bpm0 * (1 + np.linspace(-0.03, 0.03, 61)):
+        periode = 60 / bpm
+        for ph in np.arange(0, periode, 1 / fps):
+            temps = np.arange(t0 + ph, t1, periode)
+            idx = np.round(temps * fps).astype(int)
+            idx = idx[idx < len(lisse)]
+            sc = lisse[idx].mean() if len(idx) else 0
+            if sc > meilleur[0]:
+                meilleur = (sc, bpm, t0 + ph)
+    _, bpm, premier = meilleur
+    # contrôle : les attaques fortes de la fenêtre tombent-elles sur la grille (temps ou demi-temps, ±50 ms) ?
+    a, b = int(t0 * fps), min(int(t1 * fps), len(flux) - 1)
+    seg = flux[a:b]
+    pics = [a + i for i in range(1, len(seg) - 1) if seg[i] > seg[i - 1] and seg[i] >= seg[i + 1]
+            and seg[i] > np.percentile(seg, 95)]
+    demi = 30 / bpm
+    ecarts = [abs(((p / fps - premier) / demi + 0.5) % 1 - 0.5) * demi for p in pics]
+    return float(bpm), float(premier), float(np.mean([e < 0.05 for e in ecarts])) if ecarts else 0.0
+
+
+def _analyser_son(f: Path) -> dict | None:
+    """Tempo, « drop » (moment où le son explose) et calage précis des temps sur les 20 s qui suivent le drop,
+    gardés dans un .json à côté du son."""
+    meta = Path(str(f) + ".json")
+    if meta.exists():
+        return json.loads(meta.read_text(encoding="utf-8"))
+    r = _attaques(f)
+    if r is None:
+        return None
+    flux, rms, fps = r
+    n = len(flux)
+    duree_s = n / fps
+    # tempo global : autocorrélation des attaques entre 70 et 180 BPM, ramené entre 90 et 160 (rythme des coupes)
     ac = np.correlate(flux, flux, "full")[n - 1:]
     lags = np.arange(int(fps * 60 / 180), int(fps * 60 / 70) + 1)
-    lag = lags[np.argmax(ac[lags])]
-    # affinage sub-image de la période
-    periode = lag + (0.5 * (ac[lag - 1] - ac[lag + 1]) / (ac[lag - 1] - 2 * ac[lag] + ac[lag + 1] + 1e-9))
-    bpm = 60 * fps / periode
-    while bpm < 100:
+    bpm = 60 * fps / lags[np.argmax(ac[lags])]
+    while bpm < 90:
         bpm *= 2
-        periode /= 2
-    # phase : le décalage qui fait tomber la grille sur le plus d'attaques
-    phases = np.arange(0, periode, 0.5)
-    scores = [flux[np.round(np.arange(ph, n, periode)).astype(int).clip(0, n - 1)].sum() for ph in phases]
-    phase = phases[int(np.argmax(scores))] / fps
-    temps = 60 / bpm
-    # drop : le temps fort (début de mesure de 4 temps) où l'énergie monte le plus, pas dans les 2 premières secondes
-    rms = np.sqrt((trames ** 2).mean(axis=1))
+    while bpm > 160:
+        bpm /= 2
+    # drop : le moment où l'énergie monte le plus (pas dans les 2 premières secondes, assez de son derrière)
     def energie(t0, t1):
-        a, b = int(t0 * fps), int(t1 * fps)
-        return float(rms[max(a, 0):max(b, a + 1)].mean()) if a < n else 0.0
-    mesures = [phase + k * 4 * temps for k in range(int((n / fps - phase) / (4 * temps)))]
-    candidats = [(energie(t, t + 2) - energie(t - 2, t), t) for t in mesures if 2 <= t <= n / fps - 15]
-    drop = max(candidats)[1] if candidats else phase
-    d = {"bpm": round(float(bpm), 2), "phase": round(float(phase), 3), "drop": round(float(drop), 3),
-         "duree": round(n / fps, 1), "utilisations": 0}
+        a_, b_ = int(t0 * fps), int(t1 * fps)
+        return float(rms[max(a_, 0):max(b_, a_ + 1)].mean()) if a_ < n else 0.0
+    fin = max(duree_s - 20, 2.5)  # il faut ~20 s de son après le départ (durée de l'edit)
+    candidats = [(energie(t, t + 2) - energie(t - 2, t), t) for t in np.arange(2, fin, 0.25)]
+    drop = max(candidats)[1] if candidats else 0.0
+    t0 = max(0.0, drop - 0.5)
+    bpm, premier, calage = _caler(flux, fps, bpm, t0, min(duree_s, t0 + 22))
+    d = {"bpm": round(bpm, 2), "drop": round(premier, 3), "calage": round(calage, 2), "duree": round(duree_s, 1),
+         "utilisations": 0}
     meta.write_text(json.dumps(d), encoding="utf-8")
-    L.info("Son « %s » : %.1f BPM, drop à %.1f s", f.stem, bpm, drop)
+    L.info("Son « %s » : %.1f BPM, départ à %.2f s, %.0f %% des attaques sur le beat", f.stem, bpm, premier,
+           calage * 100)
     return d
 
 
@@ -376,24 +405,27 @@ def _mmss(t: float) -> str:
     return f"{int(t) // 60}:{int(t) % 60:02d}"
 
 
-def _tempo() -> tuple[float, str, tuple | None]:
-    """Tempo de l'edit et consigne de son pour la notif : un son déposé (calage exact) sinon un BPM au hasard."""
+def _tempo() -> tuple[float, float, str, tuple | None]:
+    """Tempo de l'edit, décalage du premier temps, et consigne de son pour la notif : un son déposé (calage exact)
+    sinon un BPM au hasard. Le son démarre à une seconde ronde (réglable dans TikTok) : le premier temps tombe
+    donc un peu après le début de la vidéo, et les coupes suivent."""
     son = _choisir_son()
     if son:
         f, m = son
-        return m["bpm"], f"le son « {f.stem} » en le faisant démarrer à {_mmss(m['drop'])}", son
-    bpm = random.choice(BPM)
-    return bpm, "", None
+        depart = int(m["drop"])
+        return m["bpm"], m["drop"] - depart, f"le son « {f.stem.strip()} » en le faisant démarrer à {_mmss(depart)}", son
+    return random.choice(BPM), 0.0, "", None
 
 
-def _grille(bpm: float, motif: list[int], cible: float, maxi: float = 2.0) -> tuple[list[float], list[int]]:
+def _grille(bpm: float, motif: list[int], cible: float, maxi: float = 2.0,
+            decalage: float = 0.0) -> tuple[list[float], list[int]]:
     """Durées des plans calées sur les temps du son (arrondies à l'image, sans dérive), et le nombre de temps
     écoulés à chaque coupe (pour poser flashs et textes sur les temps forts)."""
     temps = 60 / bpm
     durees, cumuls, cumul, avant = [], [], 0, 0.0
     for nb in motif:
-        cumul += max(1, min(nb, int(maxi / temps)))
-        fin = round(cumul * temps * 30) / 30
+        cumul += max(1, min(nb, int((maxi - (decalage if not durees else 0)) / temps)))
+        fin = round((decalage + cumul * temps) * 30) / 30
         durees.append(fin - avant)
         cumuls.append(cumul)
         avant = fin
@@ -513,8 +545,8 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
         random.shuffle(tete)
         dispo = tete + dispo[30:]
     cible = float(e.get("duree_s", 18))
-    bpm, consigne, son = _tempo()
-    durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible)
+    bpm, decalage, consigne, son = _tempo()
+    durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible, decalage=decalage)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     if len(choisis) < 6:
@@ -680,8 +712,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     for g in (g5, g6):
         g.sort(key=lambda p: p["mouvement"] + random.uniform(0, 0.15 if essai else 0.02), reverse=True)
     cible = float(e.get("duree_s", 18))
-    bpm, consigne, son = _tempo()
-    grille, cumuls = _grille(bpm, MOTIFS["lent"], cible)  # plus lent : on doit avoir le temps de comparer
+    bpm, decalage, consigne, son = _tempo()
+    grille, cumuls = _grille(bpm, MOTIFS["lent"], cible, decalage=decalage)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
     for d in grille:
         a = next((x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
