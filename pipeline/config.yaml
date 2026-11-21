@@ -66,6 +66,8 @@ montage:
   credit: true              # "@streamer sur Twitch" affiché en permanence
   camera_en_haut: true      # webcam du streamer en haut, jeu en grand dessous (repérée par Claude)
   cadrage_suivi: true       # le cadre vertical suit le visage ou l'action (opencv)
+  # retire au milieu des clips les passages où l'image est figée (menu pause, chargement) et où personne ne parle
+  couper_temps_morts: true
 
 # --- Agent TikTok ---
 tiktok:

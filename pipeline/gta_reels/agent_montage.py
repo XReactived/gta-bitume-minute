@@ -8,7 +8,7 @@ from .commun import DATA, config, db, log
 from .redaction import plan_par_defaut, planifier, rediger
 from .sous_titres import a_deja_des_sous_titres, traduire
 from .controle import juger_clip, trouver_camera, verifier
-from .recadrage import expression, suivre
+from .recadrage import decaler, expression, suivre, temps_morts
 from .voix import dire
 
 L = log("montage")
@@ -167,15 +167,29 @@ def duree(video: str) -> float:
 HAUT_CAM = 640  # hauteur de la caméra du streamer en haut de l'écran (le jeu prend le reste)
 
 
+def _sans_coupes(reperes, coupes):
+    """Recale les repères du cadre qui suit l'action sur le clip une fois les temps morts retirés."""
+    if not reperes or not coupes:
+        return reperes
+    r = [(decaler(t, coupes), v) for t, v in reperes]
+    r = [(t, v) for t, v in r if t is not None]
+    return r if len(r) >= 2 else None
+
+
 def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | None,
                    camera: tuple[float, float, float, float] | None = None,
-                   debut: float = 0.0, fin: float | None = None) -> None:
+                   debut: float = 0.0, fin: float | None = None,
+                   coupes: list[tuple[float, float]] | None = None) -> None:
     """Un clip -> un segment vertical 1080x1920 qui remplit l'écran.
     - avec caméra : la webcam du streamer en haut, le jeu recadré en grand en dessous ;
     - sans caméra : le jeu recadré en grand au centre, fond flou derrière.
-    debut/fin : partie du clip à garder (temps morts retirés)."""
+    debut/fin : partie du clip à garder (temps morts retirés).
+    coupes : passages à retirer au milieu (menu pause, chargement…), en secondes depuis debut."""
     travail = sortie.parent
     suivi = config()["montage"].get("cadrage_suivi", True)
+    coupes = coupes or []
+    hors = "+".join(f"between(t,{a:.2f},{b:.2f})" for a, b in coupes)
+    garder = f"select='not({hors})',setpts=N/FRAME_RATE/TB," if coupes else ""
     couleurs = "eq=contrast=1.06:saturation=1.2"  # image qui claque un peu plus sur un téléphone
     if camera:
         x, y, l, h = camera
@@ -193,19 +207,20 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
             pmin = (x + l) / (1 - lj) if x + l / 2 < 0.5 and x + l <= 1 - lj else 0.0
             pmax = (x - lj) / (1 - lj) if x + l / 2 > 0.5 and x >= lj else 1.0
             reperes = [(t, min(max(v, pmin), pmax)) for t, v in reperes]
+        reperes = _sans_coupes(reperes, coupes)
         pos_x = f"(iw-ow)*({expression(reperes)})" if reperes else f"(iw-ow)*{decalage:.4f}"
         filtres = [
-            "[0:v]split[s1][s2]",
+            f"[0:v]{garder}split[s1][s2]",
             f"[s1]crop=iw*{l:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},"
             f"scale=1080:{HAUT_CAM}:force_original_aspect_ratio=increase,crop=1080:{HAUT_CAM},setsar=1[cam]",
             f"[s2]crop=min(iw\\,ih*{1080 / bas:.4f}):ih:{pos_x}:0,scale=1080:{bas},setsar=1[jeu]",
             f"[cam][jeu]vstack,{couleurs},setsar=1[v0]",
         ]
     else:
-        reperes = suivre(source, debut, fin, 0.8 * 9 / 16) if suivi else None
+        reperes = _sans_coupes(suivre(source, debut, fin, 0.8 * 9 / 16) if suivi else None, coupes)
         pos_x = f"(iw-ow)*({expression(reperes)})" if reperes else "(iw-ow)/2"
         filtres = [
-            "[0:v]split[s1][s2]",
+            f"[0:v]{garder}split[s1][s2]",
             "[s1]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,"
             "eq=brightness=-0.2[fond]",
             f"[s2]crop=min(iw\\,ih*0.8):ih:{pos_x}:0,scale=1080:1350,setsar=1[jeu]",
@@ -228,6 +243,9 @@ def rendre_segment(source: str, sortie: Path, ass: Path | None, credit: str | No
     if not _a_du_son(source):  # garantit une piste son pour pouvoir assembler
         entrees += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
         audio = "1:a"
+    elif coupes:
+        filtres.append(f"[0:a]aselect='not({hors})',asetpts=N/SR/TB[a]")
+        audio = "[a]"
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", *entrees,
         "-filter_complex", ";".join(filtres), "-map", f"[{courant}]", "-map", audio, "-shortest",
@@ -389,6 +407,11 @@ def preparer_segment(clip, note_min: float | None = None) -> None:
         L.info("Temps morts retirés : on garde %.0f s → %.0f s sur %.0f s", debut, fin, d_brut)
     mots = [dict(w, t0=w["t0"] - debut, t1=w["t1"] - debut) for w in mots if w["t0"] >= debut and w["t1"] <= fin]
     camera = trouver_camera(clip["fichier_brut"], d_brut) if m.get("camera_en_haut", True) else None
+    # temps morts au milieu (menu pause, chargement…) : image figée et personne ne parle
+    coupes = temps_morts(clip["fichier_brut"], debut, fin, mots, camera) if m.get("couper_temps_morts", True) else []
+    if coupes:
+        mots = [dict(w, t0=decaler(w["t0"], coupes), t1=decaler(w["t1"], coupes)) for w in mots]
+        mots = [w for w in mots if w["t0"] is not None and w["t1"] is not None]
     ass = None
     if avec_st and sum(w["sur"] for w in mots) >= 3:
         ass = dossier / "subs.ass"
@@ -403,7 +426,7 @@ def preparer_segment(clip, note_min: float | None = None) -> None:
                 ecrire_ass_phrases([dict(b, texte=t) for b, t in zip(blocs, trad)], ass)
     sortie = dossier / "segment.mp4"
     rendre_segment(clip["fichier_brut"], sortie, ass, f"@{clip['streamer']} sur Twitch" if m["credit"] else None,
-                   camera, debut, fin if fin < d_brut - 0.05 else None)
+                   camera, debut, fin if fin < d_brut - 0.05 else None, coupes)
     conn = db()
     conn.execute(
         "UPDATE clips SET statut='segment', fichier_segment=?, duree_segment=?, transcription=?, score=? WHERE id=?",
