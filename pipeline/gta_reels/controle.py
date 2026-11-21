@@ -75,12 +75,12 @@ def juger_clip(video: str, duree: float, streamer: str, titre: str,
     try:
         image = _mosaique(video, instants, largeur=480, hauteur=270, cols=4)
         rep = anthropic.Anthropic().beta.messages.create(
-            model=_modele(), max_tokens=400, **secours(_modele()),
+            model=_modele(), max_tokens=1500, **secours(_modele()),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
                 "type": "object", "properties": {
                     "autorise": {"type": "boolean"},
                     "note": {"type": "number", "description": "Intérêt du clip pour TikTok, de 0 à 10"},
-                    "raison": {"type": "string"},
+                    "raison": {"type": "string", "description": "Une phrase courte (20 mots maximum)"},
                     "debut_s": {"type": "number", "description": "Seconde où garder le début du clip"},
                     "fin_s": {"type": "number", "description": "Seconde où couper la fin du clip"}},
                 "required": ["autorise", "note", "raison", "debut_s", "fin_s"], "additionalProperties": False}}},
@@ -112,7 +112,7 @@ def trouver_camera(video: str, duree: float) -> tuple[float, float, float, float
     try:
         image = _mosaique(video, [max(duree, 1.0) * 0.4], largeur=960, hauteur=540, cols=1)
         rep = anthropic.Anthropic().beta.messages.create(
-            model=_modele(), max_tokens=300, **secours(_modele()),
+            model=_modele(), max_tokens=800, **secours(_modele()),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
                 "type": "object", "properties": {
                     "camera": {"type": "boolean"},
@@ -165,7 +165,7 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
         image = _mosaique(str(sortie), instants)
         rep = anthropic.Anthropic().beta.messages.create(
             model=_modele(),
-            max_tokens=800, **secours(_modele()),
+            max_tokens=2000, **secours(_modele()),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
             system=("Tu es le contrôleur qualité exigeant d'une page TikTok française de moments GTA 6 de streamers. "
                     "Une vidéo ne part que si elle est parfaite."),

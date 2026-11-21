@@ -293,6 +293,11 @@ def preparer_segment(clip) -> None:
     ok, note, raison, debut, fin = juger_clip(clip["fichier_brut"], d_brut, clip["streamer"],
                                               clip["titre"] or "", _horodater(mots))
     if ok is None:  # Claude indisponible : on ne monte rien sans jugement, le clip attend le prochain passage
+        essais = int((clip["erreur"] or "").split("essai ")[-1]) + 1 if "jugement : essai " in (clip["erreur"] or "") else 1
+        conn = db()  # au bout de 3 échecs, on abandonne ce clip pour ne pas payer indéfiniment
+        conn.execute("UPDATE clips SET statut=?, erreur=? WHERE id=?",
+                     ("erreur" if essais >= 3 else clip["statut"], f"jugement : essai {essais}", clip["id"]))
+        conn.commit()
         return
     note_min = float(m.get("note_min", 7))
     if not ok or note < note_min:
