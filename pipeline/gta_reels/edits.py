@@ -6,7 +6,9 @@ travaillées. Pas de voix ni de sous-titres : le son tendance est ajouté à la 
 """
 import datetime as dt
 import json
+import hashlib
 import random
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -119,6 +121,46 @@ def _coupes_scenes(video: str) -> list[float]:
     return [float(x.split("pts_time:")[1].split()[0]) for x in r.stderr.splitlines() if "pts_time:" in x]
 
 
+IMAGES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _id(src: Path) -> str:
+    """Nom court et unique d'une source (deux fichiers du même nom dans deux dossiers ne se marchent pas dessus)."""
+    return f"{src.stem[:32]}_{hashlib.md5(str(src.relative_to(SOURCES)).encode()).hexdigest()[:6]}"
+
+
+def _importer_image(src: Path, jeu: str) -> int:
+    """Une image officielle (artwork, capture) devient un plan de 2,2 s : zoom lent et léger glissement, comme un
+    travelling de caméra. Les images trop petites ou trop sombres sont ignorées."""
+    img = cv2.imread(str(src))
+    Path(str(src) + ".fait").write_text("0", encoding="utf-8")
+    if img is None or img.shape[1] < 960 or img.shape[0] < 540:
+        return 0
+    if cv2.cvtColor(cv2.resize(img, (160, 90)), cv2.COLOR_BGR2GRAY).mean() < 35:
+        return 0
+    nom = f"{jeu}_img_{_id(src)}"
+    sortie = PLANS_R / f"{nom}.mp4"
+    sens = random.choice([(0.2, 0.6), (0.6, 0.2)])  # glisse vers la droite ou vers la gauche
+    z = f"(1+0.10*t/{DUREE_PLAN})"
+    filtre = ("scale=2208:1242:force_original_aspect_ratio=increase,crop=2208:1242,"
+              f"scale=w='trunc(2208*{z}/2)*2':h='trunc(1242*{z}/2)*2':eval=frame,"
+              f"crop=1920:1080:'(iw-1920)*({sens[0]}+{sens[1] - sens[0]}*t/{DUREE_PLAN})':'(ih-1080)/2',"
+              "setsar=1,fps=30,format=yuv420p")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-t", f"{DUREE_PLAN}", "-i", str(src),
+                        "-f", "lavfi", "-t", f"{DUREE_PLAN}", "-i", "anullsrc=r=48000:cl=stereo", "-vf", filtre,
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-shortest",
+                        str(sortie)], check=True, timeout=300)
+    except Exception as e:
+        L.warning("Image %s non importée : %s", src.name, e)
+        return 0
+    Path(str(sortie) + ".json").write_text(json.dumps({
+        "clip": nom, "source": src.stem, "jeu": jeu, "streamer": "Rockstar Games", "login": "", "titre": src.stem,
+        "mouvement": round(random.uniform(0.15, 0.3), 3), "note": 8, "duree": DUREE_PLAN, "utilisations": 0,
+        "paysage": True, "image": True, "cree": dt.datetime.now().isoformat(timespec="seconds")}), encoding="utf-8")
+    return 1
+
+
 def importer_trailers() -> int:
     """Découpe chaque trailer déposé dans data/sources en plans (un par changement de scène), au format paysage,
     et garde les plus beaux (ni noirs, ni cartons de texte, avec du mouvement)."""
@@ -127,12 +169,16 @@ def importer_trailers() -> int:
     PLANS_R.mkdir(parents=True, exist_ok=True)
     for sous in ("gta5", "gta6"):
         (SOURCES / sous).mkdir(exist_ok=True)
-    fichiers = [(f, "gta6") for f in sorted(SOURCES.iterdir())] + \
-               [(f, j) for j in ("gta6", "gta5") for f in sorted((SOURCES / j).iterdir())]
+    # tout ce qui est dans sources (sous-dossiers compris) est du GTA VI, sauf le dossier sources/gta5
+    fichiers = [(f, "gta5" if (SOURCES / "gta5") in f.parents else "gta6") for f in sorted(SOURCES.rglob("*"))]
     total = 0
     for src, jeu in fichiers:
-        if not src.is_file() or src.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v") \
-                or Path(str(src) + ".fait").exists():
+        if not src.is_file() or Path(str(src) + ".fait").exists():
+            continue
+        if src.suffix.lower() in IMAGES:
+            total += _importer_image(src, jeu)
+            continue
+        if src.suffix.lower() not in (".mp4", ".mov", ".mkv", ".webm", ".m4v"):
             continue
         d = duree(str(src))
         bornes = [0.0] + _coupes_scenes(str(src)) + [d]
@@ -153,7 +199,7 @@ def importer_trailers() -> int:
                 prec = bande
             if not lum or np.mean(lum) < 35:  # plan noir, fondu ou carton
                 continue
-            nom = f"{jeu}_{src.stem[:40]}_{k:03d}"
+            nom = f"{jeu}_{_id(src)}_{k:03d}"
             sortie = PLANS_R / f"{nom}.mp4"
             try:
                 subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t0:.2f}", "-t", f"{t1 - t0:.2f}",
@@ -398,8 +444,9 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
     """Un plan par case de la grille, assez long, jamais deux plans du même clip à la suite."""
     choisis, dernier = [], None
     for d in durees:
-        p = next((x for x in dispo if x["clip"] != dernier and x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08),
-                 None) or next((x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
+        bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and (img_ok or not x.get("image"))]
+        p = next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None)
         if not p:
             break
         dispo.remove(p)
@@ -409,13 +456,49 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
 
 
 def fabriquer_edit(genre: str | None = None) -> bool:
-    """Assemble un edit : plans officiels (GTA VI, GTA V/Online, ou comparatif) ou plans des streams."""
+    """Fabrique plusieurs versions d'un edit (plans, effets, rythme différents), fait noter les versions par
+    Claude comme un monteur exigeant, et ne garde la meilleure que si elle est vraiment bonne."""
     e = config().get("edits") or {}
     genre = genre or _choisir_type()
     if not genre:
         return False
-    if genre == "comparatif":
-        return _fabriquer_comparatif()
+    essais, note_min = int(e.get("essais", 3)), float(e.get("note_min", 8))
+    versions = []
+    for k in range(essais):
+        try:
+            v = _fabriquer_comparatif(k) if genre == "comparatif" else _fabriquer_simple(genre, k)
+        except Exception as ex:
+            L.warning("Version %d de l'edit %s ratée : %s", k + 1, genre, ex)
+            v = None
+        if v:
+            versions.append(v)
+    if not versions:
+        return False
+    gagnante, note, avis = _departager(versions)
+    for v in versions:
+        if v is not gagnante:
+            shutil.rmtree(v["dossier"], ignore_errors=True)
+    rate = DATA / "edit_rate.json"
+    try:
+        echecs = json.loads(rate.read_text())["echecs"] if rate.exists() else 0
+    except Exception:
+        echecs = 0
+    if echecs >= 2:  # déjà deux tournées sans version assez bonne : on accepte une très bonne (7)
+        note_min = min(note_min, 7.0)
+    if note < note_min:
+        rate.write_text(json.dumps({"echecs": echecs + 1, "quand": dt.datetime.now().timestamp()}))
+        L.info("Edit %s : meilleure version notée %.1f/10 seulement (%s), on réessaie au prochain passage",
+               genre, note, avis)
+        shutil.rmtree(gagnante["dossier"], ignore_errors=True)
+        return False
+    rate.unlink(missing_ok=True)
+    _enregistrer(gagnante, note, avis)
+    return True
+
+
+def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
+    """Une version d'edit en plein écran : GTA VI ou GTA V/Online (paysage) ou plans de streams (vertical)."""
+    e = config().get("edits") or {}
     officiel = genre in ("rockstar", "online")
     paysage = officiel
     W, H = (1920, 1080) if paysage else (1080, 1920)
@@ -425,13 +508,17 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         dispo.sort(key=lambda p: p["mouvement"], reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
+    if essai:  # autres versions : d'autres plans parmi les bons, dans un autre ordre
+        tete = dispo[:30]
+        random.shuffle(tete)
+        dispo = tete + dispo[30:]
     cible = float(e.get("duree_s", 18))
     bpm, consigne, son = _tempo()
     durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     if len(choisis) < 6:
-        return False
+        return None
     redac = _textes(choisis, genre)
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
@@ -448,15 +535,13 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv) + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
-    ok = _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls)
-    if ok and son:
-        _noter_son(*son)
-    return ok
+    return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
+                  son=son)
 
 
 def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
-           y_texte=None) -> bool:
-    """Flashs, phrases chocs, filigrane, encodage, contrôle qualité et mise en file (commun à tous les edits)."""
+           y_texte=None, son=None) -> dict | None:
+    """Flashs, phrases chocs, filigrane, encodage et contrôle qualité d'une version (commun à tous les edits)."""
     from .agent_montage import ENCODAGE, FONT, TITRE, _lignes_px, duree
     from .controle import verifier
     total, n = sum(durees), len(choisis)
@@ -503,34 +588,97 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     legende = f"{redac['legende']}\n\n🎥 Images : {credits}\n{' '.join(tags[:5])}"[:2200]
     ok, problemes = verifier(sortie, [str(sortie)], [], "edit",
                              {"hook": " / ".join(textes), "legende_complete": legende, "sans_voix": True})
+    if not ok:
+        L.info("Version d'edit %s refusée par le contrôle qualité : %s", genre, " | ".join(problemes))
+        shutil.rmtree(dossier, ignore_errors=True)
+        return None
+    return {"genre": genre, "sortie": sortie, "dossier": dossier, "choisis": choisis, "textes": textes,
+            "legende": legende, "redac": redac, "son": son, "paysage": paysage, "total": total, "n": n}
+
+
+SCHEMA_JUGE = {"type": "object", "properties": {
+    "notes": {"type": "array", "items": {"type": "object", "properties": {
+        "version": {"type": "integer"}, "note": {"type": "number"}, "avis": {"type": "string"}},
+        "required": ["version", "note", "avis"], "additionalProperties": False}},
+    "meilleure": {"type": "integer"}},
+    "required": ["notes", "meilleure"], "additionalProperties": False}
+
+
+def _departager(versions: list[dict]) -> tuple[dict, float, str]:
+    """Claude regarde chaque version (une image toutes les ~2 s) et les note comme un monteur d'edits exigeant."""
+    import anthropic
+    from .commun import secours
+    from .controle import _image_et_texte, _mosaique, _modele
+    contenu = []
+    for k, v in enumerate(versions, 1):
+        instants = [v["total"] * (i + 0.5) / 10 for i in range(10)]
+        l_, h_ = (384, 216) if v["paysage"] else (216, 384)
+        image = _mosaique(str(v["sortie"]), instants, l_, h_, 5)
+        contenu += _image_et_texte(image, f"Version {k} : {v['n']} plans, {v['total']:.0f} s, "
+                                          f"textes : {' / '.join(v['textes'])}")
+    contenu.append({"type": "text", "text": "Note chaque version et choisis la meilleure."})
+    try:
+        rep = anthropic.Anthropic().beta.messages.create(
+            model=_modele(), max_tokens=2000, **secours(_modele()),
+            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
+            system=("Tu es un monteur d'« edits » GTA qui font des millions de vues sur TikTok, et tu es très exigeant. "
+                    "On te montre plusieurs versions du même edit (10 images de chacune, dans l'ordre). Le son "
+                    "tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10, sûr de toi, en "
+                    "jugeant : la première image (elle doit arrêter le scroll), la beauté et la variété des plans "
+                    "(paysages, action, personnages, véhicules ; pas deux fois la même chose), l'absence de plan "
+                    "moche, flou, noir, de menu ou de carton de texte, la lisibilité et l'impact des gros textes, "
+                    "et si ça donne envie de regarder jusqu'au bout et de partager. 9-10 : niveau des meilleurs "
+                    "edits qui percent. 8 : très bon, on poste. 7 ou moins : pas assez bon, on ne poste pas. "
+                    "Donne un avis d'une phrase par version."),
+            messages=[{"role": "user", "content": contenu}])
+        r = json.loads(next(b.text for b in rep.content if b.type == "text"))
+        notes = {n["version"]: n for n in r["notes"]}
+        k = r["meilleure"] if 1 <= r["meilleure"] <= len(versions) else max(notes, key=lambda x: notes[x]["note"])
+        for i, n in sorted(notes.items()):
+            L.info("Edit, version %d : %.1f/10, %s", i, n["note"], n["avis"])
+        n = notes.get(k, {"note": 8, "avis": ""})
+        return versions[k - 1], float(n["note"]), n["avis"]
+    except Exception as e:  # juge indisponible : la première version (déjà validée par le contrôle qualité)
+        L.warning("Notation des versions indisponible (%s) : on garde la première", e)
+        return versions[0], 8.0, "non notée"
+
+
+def _enregistrer(v: dict, note: float, avis: str) -> None:
+    """Met la version gagnante dans la file de publication et note les plans et le son utilisés."""
+    from .agent_montage import duree
+    genre, choisis, sortie = v["genre"], v["choisis"], v["sortie"]
+    officiel = genre in ("rockstar", "online", "comparatif")
     conn = db()
     conn.execute(
         "INSERT INTO videos (fichier, clips, score, hook, legende, format, duree, statut, erreur, conseil) "
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (str(sortie), ",".join(sorted({p["clip"] for p in choisis})), 7.5, " ".join(textes), legende, "edit",
-         duree(str(sortie)), "prete" if ok else "rejetee", " | ".join(problemes)[:500] or None,
-         f"[{genre}] {redac['son']}"))
+        (str(sortie), ",".join(sorted({p["clip"] for p in choisis})), note, " ".join(v["textes"]), v["legende"],
+         "edit", duree(str(sortie)), "prete", None, f"[{genre}] {v['redac']['son']}"))
     conn.commit()
     for p in choisis:
         if officiel:  # plan officiel : on note qu'il a servi (il resservira plus tard, mélangé autrement)
-            meta = {k: v for k, v in p.items() if k != "fichier"}
+            meta = {k: x for k, x in p.items() if k != "fichier"}
             meta["utilisations"] = meta.get("utilisations", 0) + 1
             Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         else:  # plan de stream : ne sert qu'une fois
             Path(p["fichier"]).unlink(missing_ok=True)
             Path(p["fichier"] + ".json").unlink(missing_ok=True)
-    L.info("Edit %s %s : %d plans, %.1f s, %s", genre, "prêt" if ok else "refusé par le contrôle qualité", n, total,
-           " / ".join(textes) if ok else " | ".join(problemes))
-    return ok
+    if v["son"]:
+        _noter_son(*v["son"])
+    L.info("Edit %s prêt (%.1f/10, %s) : %d plans, %.1f s, %s", genre, note, avis, v["n"], v["total"],
+           " / ".join(v["textes"]))
 
 
-def _fabriquer_comparatif() -> bool:
+def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     """GTA V contre GTA VI en écran partagé vertical : GTA V en haut, GTA VI en bas, plan contre plan,
     avec l'étiquette du jeu dans chaque moitié (le format « GTA 5 vs GTA 6 » qui fait débattre en commentaire)."""
     from .agent_montage import TITRE
     e = config().get("edits") or {}
     g5 = _moins_utilises(_plans_jeu("gta5"), 20)
     g6 = _moins_utilises(_plans_jeu("gta6"), 20)
+    # les plus beaux plans d'abord (plus de mouvement), mélangés autrement d'une version à l'autre
+    for g in (g5, g6):
+        g.sort(key=lambda p: p["mouvement"] + random.uniform(0, 0.15 if essai else 0.02), reverse=True)
     cible = float(e.get("duree_s", 18))
     bpm, consigne, son = _tempo()
     grille, cumuls = _grille(bpm, MOTIFS["lent"], cible)  # plus lent : on doit avoir le temps de comparer
@@ -546,7 +694,7 @@ def _fabriquer_comparatif() -> bool:
         durees.append(d)
     cumuls = cumuls[:len(paires)]
     if len(paires) < 4:
-        return False
+        return None
     choisis = [p for paire in paires for p in paire]
     redac = _textes(choisis, "comparatif")
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
@@ -572,17 +720,20 @@ def _fabriquer_comparatif() -> bool:
                "x=50:y=50,"
                f"drawtext=fontfile={TITRE}:text='GTA VI':fontsize=96:fontcolor=0xFF5FB4:borderw=5:bordercolor=black:"
                "x=50:y=h-160[v0]")
-    ok = _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
-                cumuls, y_texte=960)
-    if ok and son:
-        _noter_son(*son)
-    return ok
+    return _finir("comparatif", choisis, durees, graphe, entrees, textes, redac, False, W, H, dossier, sortie,
+                  cumuls, y_texte=960, son=son)
 
 
 def peut_faire_un_edit() -> bool:
     e = config().get("edits") or {}
     if not e.get("actif", True):
         return False
+    try:  # après une tournée ratée, on attend 2 h avant de refaire des versions (le serveur monte aussi les clips)
+        r = json.loads((DATA / "edit_rate.json").read_text())
+        if dt.datetime.now().timestamp() - r["quand"] < 7200:
+            return False
+    except Exception:
+        pass
     par_jour = int(e.get("par_jour", 1))
     faits = db().execute("SELECT COUNT(*) FROM videos WHERE format='edit' AND statut IN ('prete','publiee') "
                          "AND creee_le >= datetime('now','-24 hours')").fetchone()[0]

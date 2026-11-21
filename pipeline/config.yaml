@@ -114,3 +114,5 @@ edits:
   actif: true
   par_jour: 1
   duree_s: 18
+  essais: 3        # versions fabriquées à chaque fois, Claude garde la meilleure
+  note_min: 8      # note minimale (sur 10) pour poster un edit
