@@ -508,7 +508,9 @@ def _moins_utilises(plans: list[dict], n: int = 40) -> list[dict]:
 
 
 BPM = [120, 128, 140, 150]  # tempos des sons d'edit qui tournent (drill, funk, phonk)
-MOTIFS = {"rapide": [2, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 1, 1, 4, 2, 2, 1, 1, 2, 4, 2, 2, 1, 1, 2, 4],
+# en temps du son (~0,46 s à 130 BPM) : des plans de 2 à 4 temps (0,9 à 1,9 s), jamais un seul temps
+# (trop rapide, on n'a pas le temps de voir le plan), avec deux petites accélérations à 2 temps
+MOTIFS = {"rapide": [4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 4, 2, 2, 4, 4],
           "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4]}
 
 
@@ -648,7 +650,7 @@ def _effet(d: float, src: float, k: int) -> tuple[str, str]:
     """Vitesse (normal, ou accéléré ×1,4 pour l'énergie ; jamais de ralenti, qui saccade sans images en plus)
     et mouvement de caméra (punch : zoom qui claque sur la coupe, secousse, lent : zoom avant doux)."""
     vit = "accel" if src >= 1.4 * d + 0.05 and random.random() < 0.3 else "normal"
-    return vit, random.choice(["punch", "punch", "secousse", "lent"])
+    return vit, random.choice(["lent", "lent", "punch"])  # plus de secousse : ça rendait l'edit brouillon
 
 
 def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, cadre=None,
@@ -880,7 +882,8 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
         instants = [(a + b) / 2 for a, b in zip(bornes, bornes[1:])][:24]
         l_, h_ = (384, 216) if v["paysage"] else (216, 384)
         image = _mosaique(str(v["sortie"]), instants, l_, h_, 6)
-        contenu += _image_et_texte(image, f"Version {k} : {v['n']} plans, {v['total']:.0f} s, "
+        contenu += _image_et_texte(image, f"Version {k} : {v['n']} plans, {v['total']:.0f} s, durée de chaque plan en secondes : "
+                                          f"{', '.join(f'{d:.1f}' for d in v.get('durees', []))}, "
                                           f"textes : {' / '.join(v['textes'])}")
     contenu.append({"type": "text", "text": "Note chaque version et choisis la meilleure."})
     try:
@@ -893,13 +896,15 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
                     "fixes, des ralentis saccadés et un texte générique (« VICE CITY », « ÇA CHAUFFE ») collé en "
                     "permanence vaut 3/10. On te montre plusieurs versions du même edit "
                     "(une image au milieu de chaque plan, dans l'ordre : deux vignettes voisines sont toujours deux "
-                    "plans différents ; ne parle de répétition que si la même scène revient vraiment). Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
+                    "plans différents ; ne parle de répétition que si la même scène revient vraiment). "
+                    f"Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
                     "Le son tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10.\n"
                     "Plafonne à 5 au maximum si tu vois l'un de ces défauts, même une seule fois : un dessin, une "
                     "illustration, une affiche, une carte postale ou un logo au lieu d'une image du jeu ; des bandes "
                     "noires dans l'image ; une photo fixe ou un plan qui ne bouge pas ; un plan sombre, flou ou moche ; "
                     "le même plan qui revient ; un gros texte qui cache un visage ou l'action ; un recadrage qui coupe "
-                    "le sujet (visage ou véhicule à moitié hors cadre). Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
+                    "le sujet (visage ou véhicule à moitié hors cadre) ; un rythme trop rapide (plusieurs plans de moins "
+                    "de 0,7 s à la suite : on n'a pas le temps de voir les images, ça fait brouillon). Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
                     "la même chose (voiture contre voiture, ville contre ville, perso contre perso…).\n"
                     "Ensuite juge : la première image (elle doit arrêter le scroll), la beauté ciné et la variété des "
                     "plans, l'impact des textes, l'envie de regarder jusqu'au bout et de partager. 9-10 : au niveau des "
