@@ -687,6 +687,12 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         rate.write_text(json.dumps({"echecs": echecs + 1, "quand": dt.datetime.now().timestamp()}))
         L.info("Edit %s : meilleure version notée %.1f/10 seulement (%s), on réessaie au prochain passage",
                genre, note, avis)
+        # on garde la meilleure version refusée (les 3 dernières) pour pouvoir la regarder et comprendre
+        refus = DATA / "final" / "refus"
+        refus.mkdir(parents=True, exist_ok=True)
+        shutil.copy(gagnante["sortie"], refus / f"{gagnante['dossier'].name}_{genre}_{note:.1f}.mp4")
+        for vieux in sorted(refus.glob("*.mp4"))[:-3]:
+            vieux.unlink(missing_ok=True)
         shutil.rmtree(gagnante["dossier"], ignore_errors=True)
         return False
     rate.unlink(missing_ok=True)
