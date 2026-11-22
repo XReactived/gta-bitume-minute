@@ -468,6 +468,11 @@ def _choisir_type() -> str | None:
           "streams": len(s_dispo) >= 12 and len({p["clip"] for p in s_dispo}) >= 4}
     dernier = db().execute("SELECT conseil FROM videos WHERE format='edit' ORDER BY id DESC LIMIT 1").fetchone()
     avant = next((g for g in ORDRE if dernier and (dernier[0] or "").startswith(f"[{g}]")), ORDRE[-1])
+    try:  # après un edit refusé, on passe au genre suivant (sinon on resterait bloqué sur un genre qui coince)
+        rate = json.loads((DATA / "edit_rate.json").read_text())
+        avant = rate.get("genre", avant) if rate.get("genre") in ORDRE else avant
+    except Exception:
+        pass
     i = ORDRE.index(avant)
     return next((g for g in ORDRE[i + 1:] + ORDRE[:i + 1] if ok[g]), None)
 
@@ -728,7 +733,7 @@ def fabriquer_edit(genre: str | None = None) -> bool:
     except Exception:
         echecs = 0
     if note < note_min:
-        rate.write_text(json.dumps({"echecs": echecs + 1, "quand": dt.datetime.now().timestamp()}))
+        rate.write_text(json.dumps({"echecs": echecs + 1, "quand": dt.datetime.now().timestamp(), "genre": genre}))
         L.info("Edit %s : meilleure version notée %.1f/10 seulement (%s), on réessaie au prochain passage",
                genre, note, avis)
         # on garde la meilleure version refusée (les 3 dernières) pour pouvoir la regarder et comprendre
@@ -757,6 +762,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
         dispo = _vivants(_moins_utilises(dispo, 150))  # large choix : les filtres (doublons, variété) en écartent beaucoup
         dispo.sort(key=_valeur, reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
+        dispo = _vivants(dispo, 20)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
     if essai:  # autres versions : d'autres plans parmi les bons, dans un autre ordre
         tete = dispo[:30]
@@ -817,7 +823,8 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
         lignes, taille = _lignes_px(texte, 120 if paysage else (120 if y_texte else 190), 1500 if paysage else 940)
         t0, t1 = (bornes[2 * k], bornes[2 * k + 1]) if not y_texte else (bornes[k], bornes[k + 1])
         # paysage : dans le tiers bas de l'image, pour ne pas cacher les visages (souvent au centre)
-        y = (y_texte or (H * 0.74 if paysage else 760)) - len(lignes) * taille * 0.55
+        # plein écran : en haut (sous la barre TikTok), loin des visages et des sous-titres du bas
+        y = y_texte - len(lignes) * taille * 0.55 if y_texte else (H * 0.74 if paysage else 300)
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
             f.write_text(ligne, encoding="utf-8")
