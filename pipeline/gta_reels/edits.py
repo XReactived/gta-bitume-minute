@@ -959,9 +959,9 @@ def peut_faire_un_edit() -> bool:
     e = config().get("edits") or {}
     if not e.get("actif", True):
         return False
-    try:  # après une tournée ratée, on attend 2 h avant de refaire des versions (le serveur monte aussi les clips)
+    try:  # pause éventuelle après une tournée ratée (edits.attente_min, 0 par défaut : on réessaie à chaque passage)
         r = json.loads((DATA / "edit_rate.json").read_text())
-        if dt.datetime.now().timestamp() - r["quand"] < 7200:
+        if dt.datetime.now().timestamp() - r["quand"] < 60 * float(e.get("attente_min", 0)):
             return False
     except Exception:
         pass

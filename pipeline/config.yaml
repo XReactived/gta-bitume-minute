@@ -114,5 +114,6 @@ edits:
   actif: true
   par_jour: 1
   duree_s: 18
-  essais: 3        # versions fabriquées à chaque fois, Claude garde la meilleure
+  essais: 4        # versions fabriquées à chaque fois, Claude garde la meilleure
+  attente_min: 0   # pause après une tournée ratée (0 : on réessaie à chaque passage, toutes les heures)
   note_min: 8      # note minimale (sur 10) pour poster un edit

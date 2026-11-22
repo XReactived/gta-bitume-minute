@@ -671,7 +671,8 @@ def compiler(forcer: bool = False) -> int:
 
 def lancer() -> int:
     conn = db()
-    faites = compiler()  # au cas où des segments attendent déjà
+    faites = _edit_du_jour()  # l'edit d'abord : il y a toujours assez de clips en stock, pas d'edit
+    faites += compiler()  # au cas où des segments attendent déjà
     for clip in conn.execute("SELECT * FROM clips WHERE statut='telecharge' ORDER BY score DESC").fetchall():
         try:
             preparer_segment(clip)
@@ -680,16 +681,20 @@ def lancer() -> int:
             conn.execute("UPDATE clips SET statut='erreur', erreur=? WHERE id=?", (str(e)[:500], clip["id"]))
             conn.commit()
             L.error("Échec du montage %s : %s", clip["id"], e)
-    try:  # un edit stylé par jour, avec les plus beaux plans mis de côté
-        from .edits import fabriquer_edit, importer_trailers, peut_faire_un_edit
-        from .edits import trier_plans
-        importer_trailers()  # trailers officiels déposés à la main dans data/sources : découpés une seule fois
+    return faites
+
+
+def _edit_du_jour() -> int:
+    """Un edit stylé par jour, avec les plus beaux plans ; retenté à chaque passage tant qu'il n'est pas réussi."""
+    try:
+        from .edits import fabriquer_edit, importer_trailers, peut_faire_un_edit, trier_plans
+        importer_trailers()  # vidéos officielles déposées à la main dans data/sources : découpées une seule fois
         trier_plans()  # Claude jette les plans moches (logos, affiches, sombre…) et note les autres, une seule fois
         if peut_faire_un_edit() and fabriquer_edit():
-            faites += 1
+            return 1
     except Exception as e:
         L.error("Échec de l'edit : %s", e)
-    return faites
+    return 0
 
 
 if __name__ == "__main__":
