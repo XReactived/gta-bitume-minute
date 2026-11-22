@@ -133,7 +133,9 @@ def _plans_dispo(dossier: Path = PLANS) -> list[dict]:
 def _plans_jeu(jeu: str) -> list[dict]:
     """Plans officiels d'un jeu (« gta6 » ou « gta5 ») ; les anciens plans sans étiquette sont du GTA VI.
     Les plans jetés au tri (logo, affiche, sombre, flou…) ne sont jamais utilisés."""
-    return [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)]
+    plans = [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)]
+    beaux = [p for p in plans if p.get("note_ia", 7) >= 7]  # seulement les beaux plans, s'il y en a assez
+    return beaux if len(beaux) >= 40 else plans
 
 
 def _analyse(p: dict) -> dict:
@@ -178,10 +180,20 @@ def _analyse(p: dict) -> dict:
     return p
 
 
+def _origine(p: dict) -> tuple[str, int]:
+    """(vidéo d'origine, numéro du plan dans cette vidéo) : « gta6_Trailer_ab12cd_014 » → (« gta6_Trailer_ab12cd », 14)."""
+    base, _, num = p["clip"].rpartition("_")
+    return (base, int(num)) if num.isdigit() else (p["clip"], -100)
+
+
 def _pareil(a: dict, b: dict) -> bool:
-    """Deux plans quasi identiques (moins de 10 bits d'écart sur 64)."""
+    """Deux plans trop proches pour aller dans le même edit : quasi la même image (empreinte), ou deux morceaux
+    voisins de la même scène d'une vidéo (le découpage coupe parfois un long plan en plusieurs)."""
+    (sa, ka), (sb, kb) = _origine(a), _origine(b)
+    if sa == sb and abs(ka - kb) <= 3:
+        return True
     try:
-        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 10
+        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 14
     except (KeyError, ValueError):
         return False
 
@@ -210,7 +222,8 @@ def trier_plans(max_lots: int = 40) -> int:
     import anthropic
     from .commun import secours
     from .controle import _image_et_texte, _modele
-    a_trier = [p for p in _plans_dispo(PLANS_R) if p.get("tri_v") != 2]
+    # tri v3 : les images (artworks, captures) sont revues pour écarter les dessins et illustrations
+    a_trier = [p for p in _plans_dispo(PLANS_R) if p.get("tri_v", 0) < (3 if p.get("image") else 2)]
     faits = 0
     for lot in [a_trier[i:i + 20] for i in range(0, len(a_trier), 20)][:max_lots]:
         with tempfile.TemporaryDirectory() as d:
@@ -236,7 +249,9 @@ def trier_plans(max_lots: int = 40) -> int:
                         "écran noir ou presque, plan très sombre, flou, moche, sans intérêt, montage d'images "
                         "(bordures, plusieurs images), image entourée de grandes bandes noires ou grises, et tout ce "
                         "que TikTok refuse : nudité, tenue très dénudée mise en avant, club de strip-tease ou barre de "
-                        "pole dance, contenu sexuel ou suggestif, violence crue. Note les autres sur 10 selon leur beauté et leur impact "
+                        "pole dance, contenu sexuel ou suggestif, violence crue. garder = false aussi pour tout "
+                        "dessin, illustration, artwork peint ou visuel promotionnel stylisé : on ne garde que des "
+                        "images qui ressemblent au jeu lui-même (rendu 3D du jeu). Note les autres sur 10 selon leur beauté et leur impact "
                         "(9-10 : plan ciné spectaculaire ; 5 : correct mais banal). Sujet : ce qu'on voit surtout."),
                 messages=[{"role": "user", "content": _image_et_texte(
                     planche, f"{len(lot)} vignettes numérotées de 1 à {len(lot)}. Trie chacune.")}])
@@ -250,7 +265,8 @@ def trier_plans(max_lots: int = 40) -> int:
             if not x:
                 continue
             meta = {c: v for c, v in p.items() if c != "fichier"}
-            meta.update(garder=bool(x["garder"]), note_ia=float(x["note"]), sujet=x["sujet"], tri_v=2)
+            meta.update(garder=bool(x["garder"]), note_ia=float(x["note"]), sujet=x["sujet"],
+                        tri_v=3 if p.get("image") else 2)
             Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             faits += 1
     if faits:
