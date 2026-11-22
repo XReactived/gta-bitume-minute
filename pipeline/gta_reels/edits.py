@@ -766,9 +766,10 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     bornes = [0.0] + [min(coupes, key=lambda c: abs(c - k * total / len(textes))) if coupes else k * total / len(textes)
                       for k in range(1, len(textes))] + [total]
     for k, texte in enumerate(textes):
-        lignes, taille = _lignes_px(texte, 150 if paysage else (120 if y_texte else 190), 1500 if paysage else 940)
+        lignes, taille = _lignes_px(texte, 120 if paysage else (120 if y_texte else 190), 1500 if paysage else 940)
         t0, t1 = bornes[k], bornes[k + 1]
-        y = (y_texte or (H * 0.5 if paysage else 820)) - len(lignes) * taille * 0.55
+        # paysage : dans le tiers bas de l'image, pour ne pas cacher les visages (souvent au centre)
+        y = (y_texte or (H * 0.74 if paysage else 820)) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
             f.write_text(ligne, encoding="utf-8")
@@ -803,7 +804,8 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
         shutil.rmtree(dossier, ignore_errors=True)
         return None
     return {"genre": genre, "sortie": sortie, "dossier": dossier, "choisis": choisis, "textes": textes,
-            "legende": legende, "redac": redac, "son": son, "paysage": paysage, "total": total, "n": n}
+            "legende": legende, "redac": redac, "son": son, "paysage": paysage, "total": total, "n": n,
+            "durees": list(durees)}
 
 
 GENRES_JUGE = {
@@ -827,9 +829,11 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
     from .controle import _image_et_texte, _mosaique, _modele
     contenu = []
     for k, v in enumerate(versions, 1):
-        instants = [v["total"] * (i + 0.5) / 16 for i in range(16)]
+        # exactement une image au milieu de chaque plan : deux images voisines sont donc toujours deux plans
+        bornes = np.cumsum([0.0] + v["durees"])
+        instants = [(a + b) / 2 for a, b in zip(bornes, bornes[1:])][:24]
         l_, h_ = (384, 216) if v["paysage"] else (216, 384)
-        image = _mosaique(str(v["sortie"]), instants, l_, h_, 8)
+        image = _mosaique(str(v["sortie"]), instants, l_, h_, 6)
         contenu += _image_et_texte(image, f"Version {k} : {v['n']} plans, {v['total']:.0f} s, "
                                           f"textes : {' / '.join(v['textes'])}")
     contenu.append({"type": "text", "text": "Note chaque version et choisis la meilleure."})
@@ -839,7 +843,8 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
             system=("Tu es un monteur d'« edits » GTA qui font des millions de vues sur TikTok, et tu es TRÈS sévère : "
                     "la plupart des edits amateurs méritent 3 à 6. On te montre plusieurs versions du même edit "
-                    f"(16 images de chacune, dans l'ordre). Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
+                    "(une image au milieu de chaque plan, dans l'ordre : deux vignettes voisines sont toujours deux "
+                    "plans différents ; ne parle de répétition que si la même scène revient vraiment). Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
                     "Le son tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10.\n"
                     "Plafonne à 5 au maximum si tu vois l'un de ces défauts, même une seule fois : un dessin, une "
                     "illustration, une affiche, une carte postale ou un logo au lieu d'une image du jeu ; des bandes "
