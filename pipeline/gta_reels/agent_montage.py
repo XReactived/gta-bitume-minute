@@ -678,7 +678,9 @@ def lancer() -> int:
             L.error("Échec du montage %s : %s", clip["id"], e)
     try:  # un edit stylé par jour, avec les plus beaux plans mis de côté
         from .edits import fabriquer_edit, importer_trailers, peut_faire_un_edit
+        from .edits import trier_plans
         importer_trailers()  # trailers officiels déposés à la main dans data/sources : découpés une seule fois
+        trier_plans()  # Claude jette les plans moches (logos, affiches, sombre…) et note les autres, une seule fois
         if peut_faire_un_edit() and fabriquer_edit():
             faites += 1
     except Exception as e:

@@ -131,8 +131,104 @@ def _plans_dispo(dossier: Path = PLANS) -> list[dict]:
 
 
 def _plans_jeu(jeu: str) -> list[dict]:
-    """Plans officiels d'un jeu (« gta6 » ou « gta5 ») ; les anciens plans sans étiquette sont du GTA VI."""
-    return [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu]
+    """Plans officiels d'un jeu (« gta6 » ou « gta5 ») ; les anciens plans sans étiquette sont du GTA VI.
+    Les plans jetés au tri (logo, affiche, sombre, flou…) ne sont jamais utilisés."""
+    return [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)]
+
+
+def _bande(p: dict) -> float:
+    """Hauteur des bandes noires « cinéma » en haut et en bas du plan (fraction de l'image), mesurée une fois."""
+    if "bande" in p:
+        return float(p["bande"])
+    b = 0.0
+    cap = cv2.VideoCapture(p["fichier"])
+    cap.set(cv2.CAP_PROP_POS_MSEC, p.get("duree", DUREE_PLAN) * 500)
+    ok, img = cap.read()
+    cap.release()
+    if ok:
+        lignes = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean(axis=1)
+        h = len(lignes)
+        haut = next((i for i in range(h // 3) if lignes[i] > 14), h // 3)
+        bas = next((i for i in range(h // 3) if lignes[h - 1 - i] > 14), h // 3)
+        b = min(haut, bas) / h
+        b = b if b > 0.02 else 0.0
+    if p.get("fichier") and Path(p["fichier"] + ".json").exists():
+        meta = {c: v for c, v in p.items() if c != "fichier"}
+        meta["bande"] = round(b, 4)
+        Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    p["bande"] = round(b, 4)
+    return b
+
+
+def _valeur(p: dict) -> float:
+    """Beauté d'un plan : la note donnée au tri (sur 10), plus un bonus s'il y a du mouvement."""
+    return float(p.get("note_ia", 6)) + 3 * float(p.get("mouvement", 0))
+
+
+SUJETS = ["voiture", "moto", "bateau", "avion", "personnage", "action", "ville", "plage", "nature", "nuit",
+          "interieur", "autre"]
+SCHEMA_TRI = {"type": "object", "properties": {"plans": {"type": "array", "items": {"type": "object", "properties": {
+    "num": {"type": "integer"},
+    "garder": {"type": "boolean"},
+    "note": {"type": "number", "description": "beauté et impact du plan pour un edit TikTok, de 1 à 10"},
+    "sujet": {"type": "string", "enum": SUJETS}},
+    "required": ["num", "garder", "note", "sujet"], "additionalProperties": False}}},
+    "required": ["plans"], "additionalProperties": False}
+
+
+def trier_plans(max_lots: int = 40) -> int:
+    """Claude regarde une fois chaque plan officiel (par planches de 20) : il jette ce qui n'a rien à faire dans un
+    edit (logo, titre, carton de texte, affiche, écran noir, plan sombre, flou ou moche) et note les autres sur 10
+    avec leur sujet, pour choisir les plus beaux et varier (ou les mettre face à face dans le comparatif)."""
+    import tempfile
+    import anthropic
+    from .commun import secours
+    from .controle import _image_et_texte, _modele
+    a_trier = [p for p in _plans_dispo(PLANS_R) if "garder" not in p]
+    faits = 0
+    for lot in [a_trier[i:i + 20] for i in range(0, len(a_trier), 20)][:max_lots]:
+        with tempfile.TemporaryDirectory() as d:
+            for k, p in enumerate(lot, 1):
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{p.get('duree', DUREE_PLAN) / 2:.2f}",
+                                "-i", p["fichier"], "-frames:v", "1", "-vf",
+                                "scale=384:216,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                                f"text='{k}':fontsize=30:fontcolor=yellow:box=1:boxcolor=black@0.8:x=6:y=6",
+                                f"{d}/{k:02d}.jpg"], timeout=60)
+            if not list(Path(d).glob("*.jpg")):
+                continue
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "1", "-i", f"{d}/%02d.jpg", "-vf",
+                            "tile=5x4:padding=6:color=white", "-frames:v", "1", "-q:v", "4", f"{d}/m.jpg"],
+                           check=True, timeout=60)
+            planche = Path(d, "m.jpg").read_bytes()
+        try:
+            rep = anthropic.Anthropic().beta.messages.create(
+                model=_modele(), max_tokens=3000, **secours(_modele()),
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA_TRI}},
+                system=("Tu tries les plans d'une banque d'images officielles de GTA pour des « edits » TikTok qui "
+                        "font des millions de vues. Chaque vignette numérotée est l'image du milieu d'un plan de 2 s. "
+                        "garder = false pour : logo ou titre du jeu, carton de texte, affiche ou visuel avec du texte, "
+                        "écran noir ou presque, plan très sombre, flou, moche, sans intérêt, ou montage d'images "
+                        "(bordures, plusieurs images). Note les autres sur 10 selon leur beauté et leur impact "
+                        "(9-10 : plan ciné spectaculaire ; 5 : correct mais banal). Sujet : ce qu'on voit surtout."),
+                messages=[{"role": "user", "content": _image_et_texte(
+                    planche, f"{len(lot)} vignettes numérotées de 1 à {len(lot)}. Trie chacune.")}])
+            r = json.loads(next(b.text for b in rep.content if b.type == "text"))
+        except Exception as e:
+            L.warning("Tri des plans indisponible (%s), on réessaiera", e)
+            break
+        avis = {x["num"]: x for x in r["plans"]}
+        for k, p in enumerate(lot, 1):
+            x = avis.get(k)
+            if not x:
+                continue
+            meta = {c: v for c, v in p.items() if c != "fichier"}
+            meta.update(garder=bool(x["garder"]), note_ia=float(x["note"]), sujet=x["sujet"])
+            Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            faits += 1
+    if faits:
+        jetes = sum(1 for p in _plans_dispo(PLANS_R) if p.get("garder") is False)
+        L.info("Tri des plans officiels : %d plans triés (%d jetés au total)", faits, jetes)
+    return faits
 
 
 def _coupes_scenes(video: str) -> list[float]:
@@ -467,8 +563,8 @@ def _effet(d: float, src: float, k: int) -> tuple[str, str]:
     return vit, random.choice(["punch", "punch", "secousse", "lent"])
 
 
-def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str) -> str:
-    """Filtre d'un plan : cadrage W×H, vitesse, coupe à la durée d, puis mouvement de caméra."""
+def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, bande: float = 0.0) -> str:
+    """Filtre d'un plan : bandes noires retirées, cadrage W×H, vitesse, coupe à la durée d, mouvement de caméra."""
     if vit == "ralenti":
         pts = "setpts=2*PTS,"
     elif vit == "rampe":  # 40 % du plan en accéléré ×1,8, puis ralenti ×0,5
@@ -483,7 +579,8 @@ def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: 
     else:  # secousse qui s'amortit
         fx = (f"scale={int(W * 1.07) // 2 * 2}:{int(H * 1.07) // 2 * 2},"
               f"crop={W}:{H}:'(iw-ow)/2*(1+0.9*sin(t*83)*exp(-t*5))':'(ih-oh)/2*(1+0.9*cos(t*67)*exp(-t*5))'")
-    return (f"[{entree}]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,{pts}fps=30,"
+    rogne = f"crop=iw:trunc(ih*{1 - 2 * bande - 0.01:.4f}/2)*2:0:ih*{bande + 0.005:.4f}," if bande else ""
+    return (f"[{entree}]{rogne}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,{pts}fps=30,"
             f"trim=duration={d:.3f},setpts=PTS-STARTPTS,{fx},setsar=1[{sortie}];")
 
 
@@ -498,7 +595,9 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
     for d in durees:
         img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
         bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and (img_ok or not x.get("image"))]
-        p = next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None)
+        sujet = choisis[-1].get("sujet") if choisis else None
+        p = (next((x for x in bon if x["clip"] != dernier and (not sujet or x.get("sujet") != sujet)), None)
+             or next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None))
         if not p:
             break
         dispo.remove(p)
@@ -559,7 +658,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
         dispo = _moins_utilises(dispo)
-        dispo.sort(key=lambda p: p["mouvement"], reverse=True)
+        dispo.sort(key=_valeur, reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
     if essai:  # autres versions : d'autres plans parmi les bons, dans un autre ordre
@@ -586,7 +685,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
         vit, mouv = _effet(d, p.get("duree", DUREE_PLAN), i)
-        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv) + _son(f"{i}:a", f"a{i}", d))
+        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _bande(p)) + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
     return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
@@ -613,7 +712,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     bornes = [0.0] + [min(coupes, key=lambda c: abs(c - k * total / len(textes))) if coupes else k * total / len(textes)
                       for k in range(1, len(textes))] + [total]
     for k, texte in enumerate(textes):
-        lignes, taille = _lignes_px(texte, 150 if paysage else 190, 1500 if paysage else 940)
+        lignes, taille = _lignes_px(texte, 150 if paysage else (120 if y_texte else 190), 1500 if paysage else 940)
         t0, t1 = bornes[k], bornes[k + 1]
         y = (y_texte or (H * 0.5 if paysage else 820)) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
@@ -653,6 +752,12 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
             "legende": legende, "redac": redac, "son": son, "paysage": paysage, "total": total, "n": n}
 
 
+GENRES_JUGE = {
+    "comparatif": "comparatif GTA 5 VS GTA 6 en écran partagé (GTA V en haut, GTA VI en bas, étiquettes en coin).",
+    "rockstar": "edit GTA 6 avec les images officielles de Rockstar, en paysage.",
+    "online": "edit GTA V / GTA Online avec les images officielles, en paysage.",
+    "streams": "edit avec des moments de jeu de streamers (sans leur webcam).",
+}
 SCHEMA_JUGE = {"type": "object", "properties": {
     "notes": {"type": "array", "items": {"type": "object", "properties": {
         "version": {"type": "integer"}, "note": {"type": "number"}, "avis": {"type": "string"}},
@@ -668,9 +773,9 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
     from .controle import _image_et_texte, _mosaique, _modele
     contenu = []
     for k, v in enumerate(versions, 1):
-        instants = [v["total"] * (i + 0.5) / 10 for i in range(10)]
+        instants = [v["total"] * (i + 0.5) / 16 for i in range(16)]
         l_, h_ = (384, 216) if v["paysage"] else (216, 384)
-        image = _mosaique(str(v["sortie"]), instants, l_, h_, 5)
+        image = _mosaique(str(v["sortie"]), instants, l_, h_, 8)
         contenu += _image_et_texte(image, f"Version {k} : {v['n']} plans, {v['total']:.0f} s, "
                                           f"textes : {' / '.join(v['textes'])}")
     contenu.append({"type": "text", "text": "Note chaque version et choisis la meilleure."})
@@ -678,15 +783,19 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
         rep = anthropic.Anthropic().beta.messages.create(
             model=_modele(), max_tokens=2000, **secours(_modele()),
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
-            system=("Tu es un monteur d'« edits » GTA qui font des millions de vues sur TikTok, et tu es très exigeant. "
-                    "On te montre plusieurs versions du même edit (10 images de chacune, dans l'ordre). Le son "
-                    "tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10, sûr de toi, en "
-                    "jugeant : la première image (elle doit arrêter le scroll), la beauté et la variété des plans "
-                    "(paysages, action, personnages, véhicules ; pas deux fois la même chose), l'absence de plan "
-                    "moche, flou, noir, de menu ou de carton de texte, la lisibilité et l'impact des gros textes, "
-                    "et si ça donne envie de regarder jusqu'au bout et de partager. 9-10 : niveau des meilleurs "
-                    "edits qui percent. 8 : très bon, on poste. 7 ou moins : pas assez bon, on ne poste pas. "
-                    "Donne un avis d'une phrase par version."),
+            system=("Tu es un monteur d'« edits » GTA qui font des millions de vues sur TikTok, et tu es TRÈS sévère : "
+                    "la plupart des edits amateurs méritent 3 à 6. On te montre plusieurs versions du même edit "
+                    f"(16 images de chacune, dans l'ordre). Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
+                    "Le son tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10.\n"
+                    "Plafonne à 5 au maximum si tu vois l'un de ces défauts, même une seule fois : un dessin, une "
+                    "illustration, une affiche, une carte postale ou un logo au lieu d'une image du jeu ; des bandes "
+                    "noires dans l'image ; un plan sombre, flou ou moche ; le même plan qui revient ; un gros texte qui "
+                    "cache un visage ou l'action. Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
+                    "la même chose (voiture contre voiture, ville contre ville, perso contre perso…).\n"
+                    "Ensuite juge : la première image (elle doit arrêter le scroll), la beauté ciné et la variété des "
+                    "plans, l'impact des textes, l'envie de regarder jusqu'au bout et de partager. 9-10 : au niveau des "
+                    "meilleurs edits qui percent. 8 : très bon, on poste. 7 : correct. 6 ou moins : on ne poste pas. "
+                    "Donne un avis d'une phrase par version, en citant le pire défaut."),
             messages=[{"role": "user", "content": contenu}])
         r = json.loads(next(b.text for b in rep.content if b.type == "text"))
         notes = {n["version"]: n for n in r["notes"]}
@@ -731,18 +840,24 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     avec l'étiquette du jeu dans chaque moitié (le format « GTA 5 vs GTA 6 » qui fait débattre en commentaire)."""
     from .agent_montage import TITRE
     e = config().get("edits") or {}
-    g5 = _moins_utilises(_plans_jeu("gta5"), 20)
-    g6 = _moins_utilises(_plans_jeu("gta6"), 20)
+    # du jeu contre du jeu : pas d'artworks ni de captures retouchées dans un comparatif
+    g5 = _moins_utilises([p for p in _plans_jeu("gta5") if not p.get("image")], 40)
+    g6 = _moins_utilises([p for p in _plans_jeu("gta6") if not p.get("image")], 40)
     # les plus beaux plans d'abord (plus de mouvement), mélangés autrement d'une version à l'autre
     for g in (g5, g6):
-        g.sort(key=lambda p: p["mouvement"] + random.uniform(0, 0.15 if essai else 0.02), reverse=True)
+        g.sort(key=lambda p: _valeur(p) + random.uniform(0, 1.5 if essai else 0.2), reverse=True)
     cible = float(e.get("duree_s", 18))
     bpm, decalage, consigne, son = _tempo()
     grille, cumuls = _grille(bpm, MOTIFS["lent"], cible, decalage=decalage)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
     for d in grille:
-        a = next((x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
-        b = next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        b = next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08
+                  and (not paires or x.get("sujet") != paires[-1][1].get("sujet"))), None) or \
+            next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        # face à face : un plan GTA V du même sujet que le plan GTA VI (voiture contre voiture…)
+        ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08]
+        a = next((x for x in ok5 if b and x.get("sujet") and x.get("sujet") == b.get("sujet")), None) or \
+            next(iter(ok5), None)
         if not (a and b):
             break
         g5.remove(a)
@@ -766,8 +881,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
         h_, b_ = 2 * i, 2 * i + 1
         src = min(a.get("duree", DUREE_PLAN), b.get("duree", DUREE_PLAN))
         vit, mouv = _effet(d, src, i)  # même effet sur les deux moitiés, pour comparer à armes égales
-        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv)
-                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv)
+        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _bande(a))
+                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _bande(b))
                       + f"[h{i}][b{i}]vstack=inputs=2[v{i}];" + _son(f"{b_}:a", f"a{i}", d))
     n = len(paires)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
@@ -806,4 +921,6 @@ def nettoyer(jours: int = 3) -> None:
 
 
 if __name__ == "__main__":
-    print("Edit fabriqué" if fabriquer_edit() else "Pas assez de plans pour un edit (il en faut 12, de 4 clips)")
+    importer_trailers()
+    trier_plans(max_lots=60)
+    print("Edit fabriqué" if fabriquer_edit() else "Pas d'edit assez bon cette fois (voir les notes ci-dessus)")
