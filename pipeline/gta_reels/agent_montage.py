@@ -572,12 +572,9 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
             couper(c["fichier_segment"], dossier / "apres.mp4", pause, None)
             morceaux += [str(dossier / "c_devine.mp4"), str(dossier / "apres.mp4")]
             en_pause = True
-    if redac.get("suite"):
-        vs, ds = voix_off(redac["suite"], "suite")
-        carte(ordre[-1]["fichier_segment"], dossier / "c_suite.mp4", f"LA SUITE DANS LA PARTIE {partie + 1}", "Abonne-toi",
-              vs, ds, 2.5, image_a=max((ordre[-1]["duree_segment"] or 1) - 0.5, 0.1))
-        morceaux.append(str(dossier / "c_suite.mp4"))
-    elif redac.get("question") and not en_pause:
+    # pas de carte « la suite dans la partie 2 » à la fin : elle fait zapper avant la fin (mauvais pour TikTok).
+    # La partie 2 est annoncée par le titre « PARTIE 1/2 » et la légende, et sort le lendemain.
+    if redac.get("question") and not en_pause and not redac.get("suite"):
         vq, dq = voix_off(redac["question"], "question")
         carte(ordre[-1]["fichier_segment"], dossier / "c_question.mp4", redac["question"], "Dis-le en commentaire",
               vq, dq, 3.0, image_a=max((ordre[-1]["duree_segment"] or 1) - 0.5, 0.1))

@@ -641,7 +641,8 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     officiel = genre in ("rockstar", "online", "comparatif")
     credits = ("Rockstar Games (images officielles, edit de fan)" if officiel
                else " ".join(sorted({f"twitch.tv/{p['login']}" for p in choisis})))
-    legende = f"{redac['legende']}\n\n🎥 Images : {credits}\n{' '.join(tags[:5])}"[:2200]
+    legende = (f"{redac['legende']}\n🔔 Un edit GTA chaque jour : abonne-toi\n\n"
+               f"🎥 Images : {credits}\n{' '.join(tags[:5])}")[:2200]
     ok, problemes = verifier(sortie, [str(sortie)], [], "edit",
                              {"hook": " / ".join(textes), "legende_complete": legende, "sans_voix": True})
     if not ok:

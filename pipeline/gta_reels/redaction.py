@@ -63,7 +63,7 @@ SCHEMA_PLAN = {
 CONSIGNE_PLAN = """Ton travail : décider quelles vidéos fabriquer avec les clips disponibles. Choisis le format qui sert le mieux chaque moment :
 - « solo » : un seul clip, quand il se suffit à lui-même (un moment énorme, une histoire complète). Durée = celle du clip. Seulement pour un clip noté 7/10 ou plus : un clip noté 6 va dans un top, un duel ou une rafale, jamais seul.
 - « top » : 2 à 5 clips sur un même thème (accidents, braquages, fous rires…), en compte à rebours, le meilleur en dernier.
-- « serie » : 2 ou 3 parties publiées à la suite, quand plusieurs clips racontent une même histoire ou une même session d'un streamer et que tout mettre dans une vidéo serait trop long. Chaque partie doit tenir seule et donner envie de voir la suivante.
+- « serie » : 2 ou 3 parties, publiées un jour d'intervalle (partie 2 le lendemain à la même heure) : c'est le format qui fait le plus s'abonner. Une série peut suivre une même histoire ou session d'un streamer, ou un même thème (« les pires crashs de la semaine », « GTA 6 : les flics sont fous »…). Fais-en au moins une par jour dès qu'il y a assez de bons clips. Chaque partie doit tenir seule, finir sur un vrai moment fort et donner envie de voir la suivante.
 - « duel » : exactement 2 clips de 2 streamers différents qui vivent une situation comparable (deux crashs, deux courses-poursuites, deux ratés…). La vidéo finit sur une question au public (« qui a fait le pire ? ») : idéal pour faire réagir en commentaires.
 - « devine » : un seul clip avec un retournement clair au milieu ou à la fin. On met la vidéo en pause juste avant le moment clé et on demande au public de deviner la suite, puis on montre la réponse. N'utilise ce format que si la transcription horodatée montre clairement où se trouve le moment clé.
 - « rafale » : 3 à 6 clips courts et drôles enchaînés sans annonce entre eux (format « hors contexte », rythme rapide). Pour les fous rires, les phrases cultes, les bugs absurdes.
@@ -257,5 +257,8 @@ def rediger(clips: list[dict], fmt: str = "top", partie: int = 1, parties: int =
     titre = out["legende"]
     if fmt == "serie" and f"{partie}/{parties}" not in titre:
         titre = f"Partie {partie}/{parties} : {titre}"
-    out["legende_complete"] = f"{titre}\n\n🎥 Clips : {credits}\n{' '.join(tags)}"[:2200]
+    # l'appel à s'abonner va dans la légende (lue pendant la vidéo), pas sur une carte de fin qui ferait zapper
+    appel = (f"🔔 Partie {partie + 1} demain à la même heure : abonne-toi pour pas la rater"
+             if fmt == "serie" and partie < parties else "🔔 Un moment GTA 6 chaque jour : abonne-toi")
+    out["legende_complete"] = f"{titre}\n{appel}\n\n🎥 Clips : {credits}\n{' '.join(tags)}"[:2200]
     return out

@@ -122,14 +122,16 @@ def noter_publication(conn, v, pid: str, mode: str) -> None:
 
 
 def choisir(conn):
-    """Une série en cours passe en priorité (partie suivante), sinon la meilleure vidéo prête."""
+    """La partie suivante d'une série passe en priorité, le lendemain de la précédente (environ à la même heure :
+    au premier créneau 23 h après), sinon la meilleure vidéo prête."""
+    veille = (dt.datetime.now() - dt.timedelta(hours=23)).isoformat(timespec="seconds")
     suite = conn.execute(
         "SELECT v.* FROM videos v WHERE v.statut='prete' AND v.serie IS NOT NULL AND v.partie > 1 "
-        "AND EXISTS (SELECT 1 FROM videos p WHERE p.serie=v.serie AND p.partie=v.partie-1 AND p.statut='publiee') "
-        "ORDER BY v.partie LIMIT 1").fetchone()
+        "AND EXISTS (SELECT 1 FROM videos p WHERE p.serie=v.serie AND p.partie=v.partie-1 AND p.statut='publiee' "
+        "AND p.publiee_le <= ?) ORDER BY v.partie LIMIT 1", (veille,)).fetchone()
     if suite:
         return suite
-    # une série ne démarre que si toutes ses parties sont déjà montées : la suite arrive au créneau suivant
+    # une série ne démarre que si toutes ses parties sont déjà montées : la suite arrive le lendemain
     # et on évite de publier deux fois de suite le même format
     dernier = conn.execute("SELECT format FROM videos WHERE statut='publiee' ORDER BY publiee_le DESC LIMIT 1").fetchone()
     return conn.execute(
@@ -148,6 +150,37 @@ def _consigne_edit(conseil: str | None) -> str:
             "fais glisser le son pour que son premier gros temps (le drop) tombe pile au début de la vidéo.\n\n")
 
 
+def _avec_badge(v, conn) -> str:
+    """Petit badge « #N » en haut à gauche pendant toute la vidéo : numéroté au moment de l'envoi
+    (dans l'ordre de publication), il donne l'idée d'une série quotidienne qu'on suit."""
+    import subprocess
+    from pathlib import Path
+    from .agent_montage import TITRE
+    if not config()["tiktok"].get("badge", True):
+        return v["fichier"]
+    n = conn.execute("SELECT COUNT(*) FROM videos WHERE statut='publiee'").fetchone()[0] + 1
+    src = Path(v["fichier"])
+    sortie = src.with_name(f"{src.stem}_tiktok.mp4")
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                        "-of", "csv=p=0", str(src)], capture_output=True, text=True)
+    try:
+        w, h = (int(x) for x in r.stdout.strip().split(",")[:2])
+    except ValueError:
+        return v["fichier"]
+    taille = round(w * (0.055 if h > w else 0.034))
+    x, y = round(w * 0.04), round(h * (0.115 if h > w else 0.05))  # sous la barre « Suivis / Pour toi »
+    filtre = (f"drawtext=fontfile={TITRE}:text='#{n}':fontsize={taille}:fontcolor=white:"
+              f"box=1:boxcolor=black@0.55:boxborderw={taille // 3}:x={x}:y={y}")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vf", filtre, "-c:v", "libx264",
+                        "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                        "-movflags", "+faststart", str(sortie)], check=True, timeout=900)
+        return str(sortie)
+    except Exception as e:
+        L.warning("Badge non ajouté (%s) : envoi de la vidéo sans badge", e)
+        return v["fichier"]
+
+
 def lancer() -> int | None:
     conn = db()
     v = choisir(conn)
@@ -155,7 +188,7 @@ def lancer() -> int | None:
         L.warning("Aucune vidéo prête pour ce créneau")
         return None
     try:
-        pid = publier(v["fichier"], v["legende"])
+        pid = publier(_avec_badge(v, conn), v["legende"])
         conn.execute("UPDATE videos SET statut='publiee', publish_id=?, publiee_le=? WHERE id=?",
                      (pid, dt.datetime.now().isoformat(timespec="seconds"), v["id"]))
         mode = config()["tiktok"]["mode"]
