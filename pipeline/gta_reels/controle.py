@@ -170,7 +170,7 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
     if len(morceaux) == 1:  # vidéo déjà finie (contrôle du stock) : une image toutes les quelques secondes
         n = 12
         instants = [reel * (i + 0.5) / n for i in range(n)]
-        etiquettes, durees = [f"Image à {x:.0f} s" for x in instants], [reel / n] * n
+        etiquettes, durees = [f"Image à {x:.1f} s" for x in instants], [reel / n] * n
     if not instants:
         # plusieurs images par clip (une toutes les ~6 s, 4 au plus) pour juger ce qui se passe vraiment
         e2, d2 = [], []

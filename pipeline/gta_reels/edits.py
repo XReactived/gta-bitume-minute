@@ -136,28 +136,54 @@ def _plans_jeu(jeu: str) -> list[dict]:
     return [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)]
 
 
-def _bande(p: dict) -> float:
-    """Hauteur des bandes noires « cinéma » en haut et en bas du plan (fraction de l'image), mesurée une fois."""
-    if "bande" in p:
-        return float(p["bande"])
-    b = 0.0
+def _analyse(p: dict) -> dict:
+    """Mesurée une fois par plan et gardée dans son .json :
+    - cadre : la zone utile de l'image (x, y, largeur, hauteur en fractions), sans les bandes unies (noires ou
+      grises) en haut, en bas ou sur les côtés, repérées sur 3 images du plan ;
+    - empreinte : un résumé de l'image (64 bits) pour reconnaître deux plans quasi identiques (même scène reprise
+      dans deux vidéos), qui ne doivent jamais se retrouver dans le même edit."""
+    if p.get("analyse") == 2:
+        return p
     cap = cv2.VideoCapture(p["fichier"])
-    cap.set(cv2.CAP_PROP_POS_MSEC, p.get("duree", DUREE_PLAN) * 500)
-    ok, img = cap.read()
+    d = p.get("duree", DUREE_PLAN)
+    bords, empreinte = [], 0
+    for k, t in enumerate((0.25 * d, 0.5 * d, 0.8 * d)):
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, img = cap.read()
+        if not ok:
+            continue
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        h, w = g.shape
+        sat = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 1].astype(np.float32)
+        # ligne ou colonne unie et sans couleur (bande noire ou grise ; un ciel bleu uni n'est pas une bande)
+        lig = (g.std(axis=1) < 5) & (sat.mean(axis=1) < 30)
+        col = (g.std(axis=0) < 5) & (sat.mean(axis=0) < 30)
+        def compte(masque, n):
+            return next((i for i in range(n // 3) if not masque[i]), n // 3)
+        bords.append((compte(col, w) / w, compte(lig, h) / h, compte(col[::-1], w) / w, compte(lig[::-1], h) / h))
+        if k == 1:
+            petit = cv2.resize(g, (9, 8))
+            empreinte = int("".join("1" if b else "0" for b in (petit[:, 1:] > petit[:, :-1]).flatten()), 2)
     cap.release()
-    if ok:
-        lignes = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean(axis=1)
-        h = len(lignes)
-        haut = next((i for i in range(h // 3) if lignes[i] > 14), h // 3)
-        bas = next((i for i in range(h // 3) if lignes[h - 1 - i] > 14), h // 3)
-        b = min(haut, bas) / h
-        b = b if b > 0.02 else 0.0
-    if p.get("fichier") and Path(p["fichier"] + ".json").exists():
+    if bords:  # une bande n'est retenue que si elle est là sur les 3 images (pas une nuit noire passagère)
+        g_, h_, d_, b_ = (min(x[i] for x in bords) for i in range(4))
+        g_, h_, d_, b_ = (v + 0.004 if v > 0.01 else 0.0 for v in (g_, h_, d_, b_))
+        cadre = [round(g_, 4), round(h_, 4), round(max(1 - g_ - d_, 0.3), 4), round(max(1 - h_ - b_, 0.3), 4)]
+    else:
+        cadre = [0.0, 0.0, 1.0, 1.0]
+    p.update(cadre=cadre, empreinte=f"{empreinte:016x}", analyse=2)
+    if Path(p["fichier"] + ".json").exists():
         meta = {c: v for c, v in p.items() if c != "fichier"}
-        meta["bande"] = round(b, 4)
         Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    p["bande"] = round(b, 4)
-    return b
+    return p
+
+
+def _pareil(a: dict, b: dict) -> bool:
+    """Deux plans quasi identiques (moins de 10 bits d'écart sur 64)."""
+    try:
+        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 10
+    except (KeyError, ValueError):
+        return False
 
 
 def _valeur(p: dict) -> float:
@@ -184,7 +210,7 @@ def trier_plans(max_lots: int = 40) -> int:
     import anthropic
     from .commun import secours
     from .controle import _image_et_texte, _modele
-    a_trier = [p for p in _plans_dispo(PLANS_R) if "garder" not in p]
+    a_trier = [p for p in _plans_dispo(PLANS_R) if p.get("tri_v") != 2]
     faits = 0
     for lot in [a_trier[i:i + 20] for i in range(0, len(a_trier), 20)][:max_lots]:
         with tempfile.TemporaryDirectory() as d:
@@ -207,8 +233,10 @@ def trier_plans(max_lots: int = 40) -> int:
                 system=("Tu tries les plans d'une banque d'images officielles de GTA pour des « edits » TikTok qui "
                         "font des millions de vues. Chaque vignette numérotée est l'image du milieu d'un plan de 2 s. "
                         "garder = false pour : logo ou titre du jeu, carton de texte, affiche ou visuel avec du texte, "
-                        "écran noir ou presque, plan très sombre, flou, moche, sans intérêt, ou montage d'images "
-                        "(bordures, plusieurs images). Note les autres sur 10 selon leur beauté et leur impact "
+                        "écran noir ou presque, plan très sombre, flou, moche, sans intérêt, montage d'images "
+                        "(bordures, plusieurs images), image entourée de grandes bandes noires ou grises, et tout ce "
+                        "que TikTok refuse : nudité, tenue très dénudée mise en avant, club de strip-tease ou barre de "
+                        "pole dance, contenu sexuel ou suggestif, violence crue. Note les autres sur 10 selon leur beauté et leur impact "
                         "(9-10 : plan ciné spectaculaire ; 5 : correct mais banal). Sujet : ce qu'on voit surtout."),
                 messages=[{"role": "user", "content": _image_et_texte(
                     planche, f"{len(lot)} vignettes numérotées de 1 à {len(lot)}. Trie chacune.")}])
@@ -222,7 +250,7 @@ def trier_plans(max_lots: int = 40) -> int:
             if not x:
                 continue
             meta = {c: v for c, v in p.items() if c != "fichier"}
-            meta.update(garder=bool(x["garder"]), note_ia=float(x["note"]), sujet=x["sujet"])
+            meta.update(garder=bool(x["garder"]), note_ia=float(x["note"]), sujet=x["sujet"], tri_v=2)
             Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             faits += 1
     if faits:
@@ -563,7 +591,7 @@ def _effet(d: float, src: float, k: int) -> tuple[str, str]:
     return vit, random.choice(["punch", "punch", "secousse", "lent"])
 
 
-def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, bande: float = 0.0) -> str:
+def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, cadre=None) -> str:
     """Filtre d'un plan : bandes noires retirées, cadrage W×H, vitesse, coupe à la durée d, mouvement de caméra."""
     if vit == "ralenti":
         pts = "setpts=2*PTS,"
@@ -579,7 +607,9 @@ def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: 
     else:  # secousse qui s'amortit
         fx = (f"scale={int(W * 1.07) // 2 * 2}:{int(H * 1.07) // 2 * 2},"
               f"crop={W}:{H}:'(iw-ow)/2*(1+0.9*sin(t*83)*exp(-t*5))':'(ih-oh)/2*(1+0.9*cos(t*67)*exp(-t*5))'")
-    rogne = f"crop=iw:trunc(ih*{1 - 2 * bande - 0.01:.4f}/2)*2:0:ih*{bande + 0.005:.4f}," if bande else ""
+    x, y, l, h = cadre or (0, 0, 1, 1)
+    rogne = (f"crop=trunc(iw*{l:.4f}/2)*2:trunc(ih*{h:.4f}/2)*2:iw*{x:.4f}:ih*{y:.4f},"
+             if (l, h) != (1, 1) else "")
     return (f"[{entree}]{rogne}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,{pts}fps=30,"
             f"trim=duration={d:.3f},setpts=PTS-STARTPTS,{fx},setsar=1[{sortie}];")
 
@@ -594,7 +624,8 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
     choisis, dernier = [], None
     for d in durees:
         img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
-        bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and (img_ok or not x.get("image"))]
+        bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and (img_ok or not x.get("image"))
+               and not any(_pareil(x, c) for c in choisis)]  # jamais deux fois la même scène
         sujet = choisis[-1].get("sujet") if choisis else None
         p = (next((x for x in bon if x["clip"] != dernier and (not sujet or x.get("sujet") != sujet)), None)
              or next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None))
@@ -685,7 +716,8 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
         vit, mouv = _effet(d, p.get("duree", DUREE_PLAN), i)
-        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _bande(p)) + _son(f"{i}:a", f"a{i}", d))
+        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"))
+                      + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
     return _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H, dossier, sortie, cumuls,
@@ -851,11 +883,11 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     grille, cumuls = _grille(bpm, MOTIFS["lent"], cible, decalage=decalage)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
     for d in grille:
-        b = next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08
-                  and (not paires or x.get("sujet") != paires[-1][1].get("sujet"))), None) or \
-            next((x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08), None)
+        ok6 = [x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and not any(_pareil(x, q[1]) for q in paires)]
+        b = next((x for x in ok6 if not paires or x.get("sujet") != paires[-1][1].get("sujet")), None) or \
+            next(iter(ok6), None)
         # face à face : un plan GTA V du même sujet que le plan GTA VI (voiture contre voiture…)
-        ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08]
+        ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and not any(_pareil(x, q[0]) for q in paires)]
         a = next((x for x in ok5 if b and x.get("sujet") and x.get("sujet") == b.get("sujet")), None) or \
             next(iter(ok5), None)
         if not (a and b):
@@ -881,8 +913,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
         h_, b_ = 2 * i, 2 * i + 1
         src = min(a.get("duree", DUREE_PLAN), b.get("duree", DUREE_PLAN))
         vit, mouv = _effet(d, src, i)  # même effet sur les deux moitiés, pour comparer à armes égales
-        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _bande(a))
-                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _bande(b))
+        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _analyse(a).get("cadre"))
+                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _analyse(b).get("cadre"))
                       + f"[h{i}][b{i}]vstack=inputs=2[v{i}];" + _son(f"{b_}:a", f"a{i}", d))
     n = len(paires)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
