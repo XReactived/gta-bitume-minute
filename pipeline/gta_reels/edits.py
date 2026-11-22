@@ -146,7 +146,7 @@ def _analyse(p: dict) -> dict:
       grises) en haut, en bas ou sur les côtés, repérées sur 3 images du plan ;
     - empreinte : un résumé de l'image (64 bits) pour reconnaître deux plans quasi identiques (même scène reprise
       dans deux vidéos), qui ne doivent jamais se retrouver dans le même edit."""
-    if p.get("analyse") == 3:
+    if p.get("analyse") == 4:
         return p
     cap = cv2.VideoCapture(p["fichier"])
     d = p.get("duree", DUREE_PLAN)
@@ -188,7 +188,11 @@ def _analyse(p: dict) -> dict:
         if mouv.sum() > 0:
             centre = float((mouv * np.arange(len(mouv))).sum() / mouv.sum() / len(mouv))
     centre = (centre - cadre[0]) / cadre[2]
-    p.update(cadre=cadre, empreinte=f"{empreinte:016x}", centre=round(min(max(centre, 0.0), 1.0), 3), analyse=3)
+    # luminosité moyenne (0-255) et netteté (variance du laplacien) : les plans sombres ou flous cassent un edit
+    lum = float(np.mean([x.mean() for x in gris])) if gris else 128.0
+    nettete = float(np.mean([cv2.Laplacian(x, cv2.CV_32F).var() for x in gris])) if gris else 100.0
+    p.update(cadre=cadre, empreinte=f"{empreinte:016x}", centre=round(min(max(centre, 0.0), 1.0), 3),
+             lum=round(lum, 1), nettete=round(nettete, 1), analyse=4)
     if Path(p["fichier"] + ".json").exists():
         meta = {c: v for c, v in p.items() if c != "fichier"}
         Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -208,10 +212,10 @@ def _pareil(a: dict, b: dict) -> bool:
     """Deux plans trop proches pour aller dans le même edit : quasi la même image (empreinte), ou deux morceaux
     voisins de la même scène d'une vidéo (le découpage coupe parfois un long plan en plusieurs)."""
     (sa, ka), (sb, kb) = _origine(a), _origine(b)
-    if sa == sb and abs(ka - kb) <= 3:
+    if sa == sb and abs(ka - kb) <= 6:
         return True
     try:
-        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 14
+        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 18
     except (KeyError, ValueError):
         return False
 
@@ -468,6 +472,34 @@ def _choisir_type() -> str | None:
     return next((g for g in ORDRE[i + 1:] + ORDRE[:i + 1] if ok[g]), None)
 
 
+def _vivants(plans: list[dict], garder: int = 30) -> list[dict]:
+    """Écarte les plans sombres, flous ou presque figés (ils font retomber le rythme), s'il en reste assez."""
+    for p in plans:
+        _analyse(p)
+    if not plans:
+        return plans
+    mouv = sorted(float(p.get("mouvement", 0)) for p in plans)
+    seuil_mouv = mouv[len(mouv) // 4]  # le quart le plus statique saute
+    bons = [p for p in plans if p.get("lum", 128) >= 45 and p.get("nettete", 100) >= 25
+            and float(p.get("mouvement", 0)) >= seuil_mouv]
+    return bons if len(bons) >= garder else plans
+
+
+def _montee(choisis: list[dict], durees: list[float]) -> list[dict]:
+    """Montée en intensité : le plan le plus fort en accroche (il arrête le scroll), puis du plus calme au plus
+    explosif jusqu'à la fin. On garde l'ordre d'origine si un plan devient trop court pour sa case, ou si deux
+    plans du même clip se suivent."""
+    if len(choisis) < 4:
+        return choisis
+    force = lambda p: float(p.get("note_ia", 6)) + 5 * float(p.get("mouvement", 0))
+    tete = max(choisis, key=force)
+    reste = sorted((p for p in choisis if p is not tete), key=force)
+    ordre = [tete] + reste
+    ok = all(p.get("duree", DUREE_PLAN) >= d + 0.05 for p, d in zip(ordre, durees))
+    ok = ok and all(a["clip"] != b["clip"] for a, b in zip(ordre, ordre[1:]))
+    return ordre if ok else choisis
+
+
 def _moins_utilises(plans: list[dict], n: int = 40) -> list[dict]:
     """Les plans officiels resservent : les moins utilisés d'abord, dans un ordre varié."""
     random.shuffle(plans)
@@ -652,7 +684,8 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
     for d in durees:
         img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
         bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= d + 0.05 and (img_ok or not x.get("image"))
-               and not any(_pareil(x, c) for c in choisis)]  # jamais deux fois la même scène
+               and not any(_pareil(x, c) for c in choisis)  # jamais deux fois la même scène
+               and (not x.get("sujet") or sum(1 for c in choisis if c.get("sujet") == x.get("sujet")) < 3)]
         sujet = choisis[-1].get("sujet") if choisis else None
         p = (next((x for x in bon if x["clip"] != dernier and (not sujet or x.get("sujet") != sujet)), None)
              or next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None))
@@ -719,7 +752,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     W, H = 1080, 1920
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
-        dispo = _moins_utilises(dispo, 150)  # large choix : les filtres (doublons, variété) en écartent beaucoup
+        dispo = _vivants(_moins_utilises(dispo, 150))  # large choix : les filtres (doublons, variété) en écartent beaucoup
         dispo.sort(key=_valeur, reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
@@ -732,6 +765,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible, decalage=decalage)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
+    choisis = _montee(choisis, durees)
     if len(choisis) < 6:
         return None
     redac = _textes(choisis, genre)
@@ -773,7 +807,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     bornes = [0.0] + [min(coupes, key=lambda c: abs(c - k * total / len(textes))) if coupes else k * total / len(textes)
                       for k in range(1, len(textes))] + [total]
     if not y_texte:  # edit plein écran : une grosse accroche sur le premier plan, une chute sur le dernier, rien entre
-        textes = [textes[0]] + ([textes[-1]] if len(textes) > 1 else [])
+        textes = textes[:1]  # pas de texte de fin : il cachait l'action du dernier plan
         fin_accroche = next((c for c in coupes if c >= 1.0), min(1.5, total))
         debut_chute = max((c for c in coupes if c <= total - 1.2), default=total - 1.5)
         bornes = [0.0, fin_accroche] + ([debut_chute, total] if len(textes) > 1 else [])
@@ -916,8 +950,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     from .agent_montage import TITRE
     e = config().get("edits") or {}
     # du jeu contre du jeu : pas d'artworks ni de captures retouchées dans un comparatif
-    g5 = _moins_utilises([p for p in _plans_jeu("gta5") if not p.get("image")], 100)
-    g6 = _moins_utilises([p for p in _plans_jeu("gta6") if not p.get("image")], 100)
+    g5 = _vivants(_moins_utilises([p for p in _plans_jeu("gta5") if not p.get("image")], 100), 20)
+    g6 = _vivants(_moins_utilises([p for p in _plans_jeu("gta6") if not p.get("image")], 100), 20)
     # les plus beaux plans d'abord (plus de mouvement), mélangés autrement d'une version à l'autre
     for g in (g5, g6):
         g.sort(key=lambda p: _valeur(p) + random.uniform(0, 1.5 if essai else 0.2), reverse=True)
