@@ -42,7 +42,9 @@ def lancer() -> None:
                           "AND creee_le < datetime('now','-3 days')) OR statut IN ('expiree','rejetee') "
                           "OR (statut='essai' AND creee_le < datetime('now','-2 days'))"):
         d = Path(v["fichier"]).parent
-        if d.exists():
+        encore = conn.execute("SELECT 1 FROM videos WHERE statut IN ('prete','publiee') AND fichier LIKE ? "
+                              "AND creee_le >= datetime('now','-3 days')", (str(d) + "/%",)).fetchone()
+        if d.exists() and not encore:  # jamais le dossier d'une vidéo encore utile
             _suppr(d); n += 1
     if n:
         L.info("Ménage : %d fichiers ou dossiers supprimés", n)

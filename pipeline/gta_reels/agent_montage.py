@@ -516,7 +516,11 @@ def fabriquer_partie(ordre: list, fmt: str, partie: int, parties: int, serie: st
     n = len(ordre)
     ids = [c["id"] for c in ordre]
     redac = rediger([_infos(c) for c in ordre], fmt, partie, parties)
-    dossier = DATA / "final" / ("-".join(ids)[:70] + (f"-p{partie}" if serie else ""))
+    # un dossier unique par vidéo : un même clip peut resservir dans une autre vidéo, qui ne doit jamais écraser
+    # (ni faire supprimer au ménage) le fichier d'une vidéo déjà prête
+    import datetime as dt
+    dossier = DATA / "final" / ("-".join(ids)[:60] + (f"-p{partie}" if serie else "")
+                                + f"-{dt.datetime.now():%m%d%H%M%S}")
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
     # les clips de streamers buzzent sans narration (clip brut + titre + sous-titres) : la voix-off est
