@@ -133,7 +133,9 @@ def _plans_dispo(dossier: Path = PLANS) -> list[dict]:
 def _plans_jeu(jeu: str) -> list[dict]:
     """Plans officiels d'un jeu (« gta6 » ou « gta5 ») ; les anciens plans sans étiquette sont du GTA VI.
     Les plans jetés au tri (logo, affiche, sombre, flou…) ne sont jamais utilisés."""
-    plans = [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)]
+    images = (config().get("edits") or {}).get("images", False)  # photos fixes : non, sauf si on les réactive
+    plans = [p for p in _plans_dispo(PLANS_R) if p.get("jeu", "gta6") == jeu and p.get("garder", True)
+             and (images or not p.get("image"))]
     beaux = [p for p in plans if p.get("note_ia", 7) >= 7]  # seulement les beaux plans, s'il y en a assez
     return beaux if len(beaux) >= 40 else plans
 
@@ -144,11 +146,11 @@ def _analyse(p: dict) -> dict:
       grises) en haut, en bas ou sur les côtés, repérées sur 3 images du plan ;
     - empreinte : un résumé de l'image (64 bits) pour reconnaître deux plans quasi identiques (même scène reprise
       dans deux vidéos), qui ne doivent jamais se retrouver dans le même edit."""
-    if p.get("analyse") == 2:
+    if p.get("analyse") == 3:
         return p
     cap = cv2.VideoCapture(p["fichier"])
     d = p.get("duree", DUREE_PLAN)
-    bords, empreinte = [], 0
+    bords, empreinte, gris = [], 0, []
     for k, t in enumerate((0.25 * d, 0.5 * d, 0.8 * d)):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, img = cap.read()
@@ -163,7 +165,9 @@ def _analyse(p: dict) -> dict:
         def compte(masque, n):
             return next((i for i in range(n // 3) if not masque[i]), n // 3)
         bords.append((compte(col, w) / w, compte(lig, h) / h, compte(col[::-1], w) / w, compte(lig[::-1], h) / h))
+        gris.append(g)
         if k == 1:
+            visages = _VISAGES.detectMultiScale(g.astype(np.uint8), 1.15, 5, minSize=(int(h * 0.08), int(h * 0.08)))
             petit = cv2.resize(g, (9, 8))
             empreinte = int("".join("1" if b else "0" for b in (petit[:, 1:] > petit[:, :-1]).flatten()), 2)
     cap.release()
@@ -173,7 +177,18 @@ def _analyse(p: dict) -> dict:
         cadre = [round(g_, 4), round(h_, 4), round(max(1 - g_ - d_, 0.3), 4), round(max(1 - h_ - b_, 0.3), 4)]
     else:
         cadre = [0.0, 0.0, 1.0, 1.0]
-    p.update(cadre=cadre, empreinte=f"{empreinte:016x}", analyse=2)
+    # centre d'intérêt (fraction de la largeur utile) pour recadrer en vertical : le plus grand visage, sinon là
+    # où ça bouge le plus, sinon le milieu
+    centre = 0.5
+    if bords and len(visages):
+        x_, _, l_, _ = max(visages, key=lambda v: v[2] * v[3])
+        centre = (x_ + l_ / 2) / w
+    elif len(gris) >= 2:
+        mouv = np.abs(gris[-1] - gris[0]).mean(axis=0)
+        if mouv.sum() > 0:
+            centre = float((mouv * np.arange(len(mouv))).sum() / mouv.sum() / len(mouv))
+    centre = (centre - cadre[0]) / cadre[2]
+    p.update(cadre=cadre, empreinte=f"{empreinte:016x}", centre=round(min(max(centre, 0.0), 1.0), 3), analyse=3)
     if Path(p["fichier"] + ".json").exists():
         meta = {c: v for c, v in p.items() if c != "fichier"}
         Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -184,6 +199,9 @@ def _origine(p: dict) -> tuple[str, int]:
     """(vidéo d'origine, numéro du plan dans cette vidéo) : « gta6_Trailer_ab12cd_014 » → (« gta6_Trailer_ab12cd », 14)."""
     base, _, num = p["clip"].rpartition("_")
     return (base, int(num)) if num.isdigit() else (p["clip"], -100)
+
+
+_VISAGES = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 
 def _pareil(a: dict, b: dict) -> bool:
@@ -595,27 +613,17 @@ def _grille(bpm: float, motif: list[int], cible: float, maxi: float = 2.0,
 
 
 def _effet(d: float, src: float, k: int) -> tuple[str, str]:
-    """Vitesse (normal, ralenti, rampe : accéléré puis ralenti au moment fort) et mouvement de caméra
-    (punch : zoom qui claque sur la coupe, secousse, lent : zoom avant doux) de chaque plan."""
-    r = random.random()
-    if src >= 1.02 * d + 0.05 and r < 0.35:
-        vit = "rampe"
-    elif src < d + 0.05 or (k % 5 == 4 and r < 0.6):
-        vit = "ralenti"
-    else:
-        vit = "normal"
+    """Vitesse (normal, ou accéléré ×1,4 pour l'énergie ; jamais de ralenti, qui saccade sans images en plus)
+    et mouvement de caméra (punch : zoom qui claque sur la coupe, secousse, lent : zoom avant doux)."""
+    vit = "accel" if src >= 1.4 * d + 0.05 and random.random() < 0.3 else "normal"
     return vit, random.choice(["punch", "punch", "secousse", "lent"])
 
 
-def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, cadre=None) -> str:
-    """Filtre d'un plan : bandes noires retirées, cadrage W×H, vitesse, coupe à la durée d, mouvement de caméra."""
-    if vit == "ralenti":
-        pts = "setpts=2*PTS,"
-    elif vit == "rampe":  # 40 % du plan en accéléré ×1,8, puis ralenti ×0,5
-        x = 0.4 * d * 1.8
-        pts = f"setpts='if(lt(T,{x:.3f}),PTS/1.8,PTS/0.5+{x / 1.8 - x / 0.5:.4f}/TB)',"
-    else:
-        pts = ""
+def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, cadre=None,
+            centre: float = 0.5) -> str:
+    """Filtre d'un plan : bandes noires retirées, recadrage W×H centré sur l'action ou le visage, vitesse,
+    coupe à la durée d, mouvement de caméra."""
+    pts = "setpts=PTS/1.4," if vit == "accel" else ""
     z = {"punch": "(1+0.16*exp(-t*11))", "lent": f"(1+0.07*t/{d:.2f})"}.get(mouv)
     if z:
         fx = (f"scale=w='trunc({W}*{z}/2)*2':h='trunc({H}*{z}/2)*2':eval=frame,"
@@ -626,7 +634,10 @@ def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: 
     x, y, l, h = cadre or (0, 0, 1, 1)
     rogne = (f"crop=trunc(iw*{l:.4f}/2)*2:trunc(ih*{h:.4f}/2)*2:iw*{x:.4f}:ih*{y:.4f},"
              if (l, h) != (1, 1) else "")
-    return (f"[{entree}]{rogne}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,{pts}fps=30,"
+    recadre = (f"crop='min(iw,ih*{W}/{H})':'min(ih,iw*{H}/{W})':"
+               f"'max(0,min(iw-ow,iw*{centre:.3f}-ow/2))':'(ih-oh)/2',"
+               f"scale={W}:{H}:flags=lanczos,cas=0.4,")
+    return (f"[{entree}]{rogne}{recadre}setsar=1,{pts}fps=30,"
             f"trim=duration={d:.3f},setpts=PTS-STARTPTS,{fx},setsar=1[{sortie}];")
 
 
@@ -640,7 +651,7 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
     choisis, dernier = [], None
     for d in durees:
         img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
-        bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and (img_ok or not x.get("image"))
+        bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= d + 0.05 and (img_ok or not x.get("image"))
                and not any(_pareil(x, c) for c in choisis)]  # jamais deux fois la même scène
         sujet = choisis[-1].get("sujet") if choisis else None
         p = (next((x for x in bon if x["clip"] != dernier and (not sujet or x.get("sujet") != sujet)), None)
@@ -681,8 +692,6 @@ def fabriquer_edit(genre: str | None = None) -> bool:
         echecs = json.loads(rate.read_text())["echecs"] if rate.exists() else 0
     except Exception:
         echecs = 0
-    if echecs >= 2:  # déjà deux tournées sans version assez bonne : on accepte une très bonne (7)
-        note_min = min(note_min, 7.0)
     if note < note_min:
         rate.write_text(json.dumps({"echecs": echecs + 1, "quand": dt.datetime.now().timestamp()}))
         L.info("Edit %s : meilleure version notée %.1f/10 seulement (%s), on réessaie au prochain passage",
@@ -706,8 +715,8 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     officiel = genre in ("rockstar", "online")
     # les plans de streams sont en paysage depuis qu'on évite la webcam sans recadrer en vertical (plus net) ;
     # les anciens plans verticaux encore en réserve donnent un dernier edit vertical
-    paysage = officiel or all(p.get("paysage") for p in _plans_dispo(PLANS))
-    W, H = (1920, 1080) if paysage else (1080, 1920)
+    paysage = False  # toujours plein écran vertical : le paysage fait une petite bande au milieu du téléphone
+    W, H = 1080, 1920
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
         dispo = _moins_utilises(dispo, 150)  # large choix : les filtres (doublons, variété) en écartent beaucoup
@@ -729,8 +738,6 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
 
-    if paysage:  # peu de texte sur les edits de trailers : 2 phrases au plus
-        textes = textes[:2]
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
@@ -738,7 +745,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
         vit, mouv = _effet(d, p.get("duree", DUREE_PLAN), i)
-        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"))
+        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"), p.get("centre", 0.5))
                       + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
@@ -765,11 +772,16 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     # chaque phrase apparaît pile sur une coupe (donc sur le temps), la dernière reste jusqu'à la fin
     bornes = [0.0] + [min(coupes, key=lambda c: abs(c - k * total / len(textes))) if coupes else k * total / len(textes)
                       for k in range(1, len(textes))] + [total]
+    if not y_texte:  # edit plein écran : une grosse accroche sur le premier plan, une chute sur le dernier, rien entre
+        textes = [textes[0]] + ([textes[-1]] if len(textes) > 1 else [])
+        fin_accroche = next((c for c in coupes if c >= 1.0), min(1.5, total))
+        debut_chute = max((c for c in coupes if c <= total - 1.2), default=total - 1.5)
+        bornes = [0.0, fin_accroche] + ([debut_chute, total] if len(textes) > 1 else [])
     for k, texte in enumerate(textes):
         lignes, taille = _lignes_px(texte, 120 if paysage else (120 if y_texte else 190), 1500 if paysage else 940)
-        t0, t1 = bornes[k], bornes[k + 1]
+        t0, t1 = (bornes[2 * k], bornes[2 * k + 1]) if not y_texte else (bornes[k], bornes[k + 1])
         # paysage : dans le tiers bas de l'image, pour ne pas cacher les visages (souvent au centre)
-        y = (y_texte or (H * 0.74 if paysage else 820)) - len(lignes) * taille * 0.55
+        y = (y_texte or (H * 0.74 if paysage else 760)) - len(lignes) * taille * 0.55
         for j, ligne in enumerate(lignes[:3]):
             f = dossier / f"t{k}_{j}.txt"
             f.write_text(ligne, encoding="utf-8")
@@ -841,15 +853,19 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
         rep = anthropic.Anthropic().beta.messages.create(
             model=_modele(), max_tokens=2000, **secours(_modele()),
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
-            system=("Tu es un monteur d'« edits » GTA qui font des millions de vues sur TikTok, et tu es TRÈS sévère : "
-                    "la plupart des edits amateurs méritent 3 à 6. On te montre plusieurs versions du même edit "
+            system=("Tu es un expert du montage d'« edits » et de clips GTA, le genre de clipper dont les edits font des "
+                    "millions de vues sur TikTok, et tu es TRÈS sévère : la plupart des edits amateurs méritent 3 à 6. "
+                    "Exemple de référence : un edit en format paysage avec du noir autour sur téléphone, des photos "
+                    "fixes, des ralentis saccadés et un texte générique (« VICE CITY », « ÇA CHAUFFE ») collé en "
+                    "permanence vaut 3/10. On te montre plusieurs versions du même edit "
                     "(une image au milieu de chaque plan, dans l'ordre : deux vignettes voisines sont toujours deux "
                     "plans différents ; ne parle de répétition que si la même scène revient vraiment). Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
                     "Le son tendance sera ajouté ensuite, calé sur le rythme. Note chaque version sur 10.\n"
                     "Plafonne à 5 au maximum si tu vois l'un de ces défauts, même une seule fois : un dessin, une "
                     "illustration, une affiche, une carte postale ou un logo au lieu d'une image du jeu ; des bandes "
-                    "noires dans l'image ; un plan sombre, flou ou moche ; le même plan qui revient ; un gros texte qui "
-                    "cache un visage ou l'action. Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
+                    "noires dans l'image ; une photo fixe ou un plan qui ne bouge pas ; un plan sombre, flou ou moche ; "
+                    "le même plan qui revient ; un gros texte qui cache un visage ou l'action ; un recadrage qui coupe "
+                    "le sujet (visage ou véhicule à moitié hors cadre). Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
                     "la même chose (voiture contre voiture, ville contre ville, perso contre perso…).\n"
                     "Ensuite juge : la première image (elle doit arrêter le scroll), la beauté ciné et la variété des "
                     "plans, l'impact des textes, l'envie de regarder jusqu'au bout et de partager. 9-10 : au niveau des "
@@ -910,11 +926,11 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     grille, cumuls = _grille(bpm, MOTIFS["lent"], cible, decalage=decalage)  # plus lent : on doit avoir le temps de comparer
     paires, durees = [], []
     for d in grille:
-        ok6 = [x for x in g6 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and not any(_pareil(x, q[1]) for q in paires)]
+        ok6 = [x for x in g6 if x.get("duree", DUREE_PLAN) >= d + 0.05 and not any(_pareil(x, q[1]) for q in paires)]
         b = next((x for x in ok6 if not paires or x.get("sujet") != paires[-1][1].get("sujet")), None) or \
             next(iter(ok6), None)
         # face à face : un plan GTA V du même sujet que le plan GTA VI (voiture contre voiture…)
-        ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= 0.5 * d + 0.08 and not any(_pareil(x, q[0]) for q in paires)]
+        ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= d + 0.05 and not any(_pareil(x, q[0]) for q in paires)]
         a = next((x for x in ok5 if b and x.get("sujet") and x.get("sujet") == b.get("sujet")), None) or \
             next(iter(ok5), None)
         if not (a and b):
@@ -940,8 +956,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
         h_, b_ = 2 * i, 2 * i + 1
         src = min(a.get("duree", DUREE_PLAN), b.get("duree", DUREE_PLAN))
         vit, mouv = _effet(d, src, i)  # même effet sur les deux moitiés, pour comparer à armes égales
-        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _analyse(a).get("cadre"))
-                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _analyse(b).get("cadre"))
+        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _analyse(a).get("cadre"), a.get("centre", 0.5))
+                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _analyse(b).get("cadre"), b.get("centre", 0.5))
                       + f"[h{i}][b{i}]vstack=inputs=2[v{i}];" + _son(f"{b_}:a", f"a{i}", d))
     n = len(paires)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
