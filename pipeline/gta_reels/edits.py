@@ -710,7 +710,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     W, H = (1920, 1080) if paysage else (1080, 1920)
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
-        dispo = _moins_utilises(dispo)
+        dispo = _moins_utilises(dispo, 150)  # large choix : les filtres (doublons, variété) en écartent beaucoup
         dispo.sort(key=_valeur, reverse=True)
     else:  # les meilleurs plans, en alternant les clips (jamais deux plans du même clip à la suite)
         dispo.sort(key=lambda p: p["mouvement"] * (1 + p["note"] / 10), reverse=True)
@@ -900,8 +900,8 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     from .agent_montage import TITRE
     e = config().get("edits") or {}
     # du jeu contre du jeu : pas d'artworks ni de captures retouchées dans un comparatif
-    g5 = _moins_utilises([p for p in _plans_jeu("gta5") if not p.get("image")], 40)
-    g6 = _moins_utilises([p for p in _plans_jeu("gta6") if not p.get("image")], 40)
+    g5 = _moins_utilises([p for p in _plans_jeu("gta5") if not p.get("image")], 100)
+    g6 = _moins_utilises([p for p in _plans_jeu("gta6") if not p.get("image")], 100)
     # les plus beaux plans d'abord (plus de mouvement), mélangés autrement d'une version à l'autre
     for g in (g5, g6):
         g.sort(key=lambda p: _valeur(p) + random.uniform(0, 1.5 if essai else 0.2), reverse=True)
