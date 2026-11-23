@@ -516,7 +516,9 @@ BPM = [120, 128, 140, 150]  # tempos des sons d'edit qui tournent (drill, funk, 
 # en temps du son (~0,46 s à 130 BPM) : des plans de 2 à 4 temps (0,9 à 1,9 s), jamais un seul temps
 # (trop rapide, on n'a pas le temps de voir le plan), avec deux petites accélérations à 2 temps
 MOTIFS = {"rapide": [4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 4, 2, 2, 4, 4],
-          "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4]}
+          "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4],
+          # style « ciné » des edits de trailer qui font 1 M de likes : ~1 s par plan, régulier, une respiration
+          "cine": [2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2]}
 
 
 def _attaques(f: Path, sr: int = 22050, hop: int = 256) -> tuple[np.ndarray, np.ndarray, float] | None:
@@ -663,7 +665,7 @@ def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: 
     """Filtre d'un plan : bandes noires retirées, recadrage W×H centré sur l'action ou le visage, vitesse,
     coupe à la durée d, mouvement de caméra."""
     pts = "setpts=PTS/1.4," if vit == "accel" else ""
-    z = {"punch": "(1+0.16*exp(-t*11))", "lent": f"(1+0.07*t/{d:.2f})"}.get(mouv)
+    z = {"punch": "(1+0.16*exp(-t*11))", "lent": f"(1+0.04*t/{d:.2f})"}.get(mouv)
     if z:
         fx = (f"scale=w='trunc({W}*{z}/2)*2':h='trunc({H}*{z}/2)*2':eval=frame,"
               f"crop={W}:{H}:(iw-{W})/2:(ih-{H})/2")
@@ -755,8 +757,10 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     officiel = genre in ("rockstar", "online")
     # les plans de streams sont en paysage depuis qu'on évite la webcam sans recadrer en vertical (plus net) ;
     # les anciens plans verticaux encore en réserve donnent un dernier edit vertical
-    paysage = False  # toujours plein écran vertical : le paysage fait une petite bande au milieu du téléphone
-    W, H = 1080, 1920
+    # images officielles : comme les edits qui percent (1,2 M de likes), le plan du trailer en paysage d'origine,
+    # sans recadrage, sans texte, sans effet ; les plans de streams restent en plein écran vertical
+    paysage = officiel
+    W, H = (1920, 1080) if paysage else (1080, 1920)
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
         dispo = _vivants(_moins_utilises(dispo, 150))  # large choix : les filtres (doublons, variété) en écartent beaucoup
@@ -770,7 +774,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
         dispo = tete + dispo[30:]
     cible = float(e.get("duree_s", 18))
     bpm, decalage, consigne, son = _tempo()
-    durees, cumuls = _grille(bpm, MOTIFS["rapide"], cible, decalage=decalage)
+    durees, cumuls = _grille(bpm, MOTIFS["cine" if officiel else "rapide"], cible, decalage=decalage)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     choisis = _montee(choisis, durees)
@@ -779,6 +783,8 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     redac = _textes(choisis, genre)
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
+    if officiel:
+        textes = []  # aucun texte : les images parlent d'elles-mêmes
 
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
@@ -786,7 +792,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     entrees, chaine = [], []
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
-        vit, mouv = _effet(d, p.get("duree", DUREE_PLAN), i)
+        vit, mouv = ("normal", "lent") if officiel else _effet(d, p.get("duree", DUREE_PLAN), i)
         chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"), p.get("centre", 0.5))
                       + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
@@ -805,7 +811,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     coupes = list(np.cumsum(durees)[:-1])
     # flash blanc sur les coupes qui tombent sur un temps fort (début de mesure)
     fortes = [c for c, b in zip(coupes, cumuls) if b % 4 == 0] or coupes[1::3]
-    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes)
+    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes) if not (paysage and not y_texte) else ""
     v = "v0"
     if flashs:
         graphe += f";[v0]eq=brightness='if({flashs},0.35,0)':eval=frame[vf]"
@@ -899,9 +905,11 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
             system=("Tu es un expert du montage d'« edits » et de clips GTA, le genre de clipper dont les edits font des "
                     "millions de vues sur TikTok, et tu es TRÈS sévère : la plupart des edits amateurs méritent 3 à 6. "
-                    "Exemple de référence : un edit en format paysage avec du noir autour sur téléphone, des photos "
-                    "fixes, des ralentis saccadés et un texte générique (« VICE CITY », « ÇA CHAUFFE ») collé en "
-                    "permanence vaut 3/10. On te montre plusieurs versions du même edit "
+                    "Références qui ont percé (1,2 M et 650 k likes) : des plans ciné du trailer GTA 6, en paysage d'origine "
+                    "(c'est voulu, ce n'est pas un défaut), environ 1 s par plan, aucun texte, aucun effet, juste les "
+                    "plus beaux plans (ville au coucher du soleil, plage, bateau, hélico, persos stylés) enchaînés sur un "
+                    "son tendance. À l'inverse, des photos fixes, des ralentis saccadés, des textes génériques collés "
+                    "partout ou des plans de 0,5 s valent 3/10. On te montre plusieurs versions du même edit "
                     "(une image au milieu de chaque plan, dans l'ordre : deux vignettes voisines sont toujours deux "
                     "plans différents ; ne parle de répétition que si la même scène revient vraiment). "
                     f"Type d'edit : {GENRES_JUGE.get(versions[0]['genre'], '')} "
@@ -914,7 +922,7 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
                     "de 0,7 s à la suite : on n'a pas le temps de voir les images, ça fait brouillon). Pour un comparatif : plafonne à 5 si les deux moitiés ne montrent pas "
                     "la même chose (voiture contre voiture, ville contre ville, perso contre perso…).\n"
                     "Ensuite juge : la première image (elle doit arrêter le scroll), la beauté ciné et la variété des "
-                    "plans, l'impact des textes, l'envie de regarder jusqu'au bout et de partager. 9-10 : au niveau des "
+                    "plans, l'impact des textes s'il y en a, l'envie de regarder jusqu'au bout et de partager. 9-10 : au niveau des "
                     "meilleurs edits qui percent. 8 : très bon, on poste. 7 : correct. 6 ou moins : on ne poste pas. "
                     "Donne un avis d'une phrase par version, en citant le pire défaut."),
             messages=[{"role": "user", "content": contenu}])

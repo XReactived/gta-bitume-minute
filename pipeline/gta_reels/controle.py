@@ -188,7 +188,7 @@ def verifier(sortie: Path, morceaux: list[str], etiquettes: list[str], fmt: str,
     voix = ("Voix-off : aucune (clip brut avec le vrai son du streamer)\n" if redac.get("sans_voix") else
             f"Voix-off d'intro : {redac.get('intro')}\n"
             f"Annonces lues : {json.dumps(redac.get('annonces'), ensure_ascii=False)}\n")
-    textes = (f"Format : {fmt}\nTitre à l'écran : {redac.get('hook')}\n{voix}"
+    textes = (f"Format : {fmt}\nTitre à l'écran : {redac.get('hook') or 'aucun (voulu : edit sans texte)'}\n{voix}"
               f"Question : {redac.get('question') or '(aucune)'}\nSuite : {redac.get('suite') or '(aucune)'}\n"
               f"Légende TikTok : {redac.get('legende_complete')}")
     try:
