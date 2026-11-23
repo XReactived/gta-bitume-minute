@@ -895,7 +895,7 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
     contenu.append({"type": "text", "text": "Note chaque version et choisis la meilleure."})
     try:
         rep = anthropic.Anthropic().beta.messages.create(
-            model=_modele(), max_tokens=2000, **secours(_modele()),
+            model=_modele(), max_tokens=8000, **secours(_modele()),
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_JUGE}},
             system=("Tu es un expert du montage d'« edits » et de clips GTA, le genre de clipper dont les edits font des "
                     "millions de vues sur TikTok, et tu es TRÈS sévère : la plupart des edits amateurs méritent 3 à 6. "
@@ -925,9 +925,9 @@ def _departager(versions: list[dict]) -> tuple[dict, float, str]:
             L.info("Edit, version %d : %.1f/10, %s", i, n["note"], n["avis"])
         n = notes.get(k, {"note": 8, "avis": ""})
         return versions[k - 1], float(n["note"]), n["avis"]
-    except Exception as e:  # juge indisponible : la première version (déjà validée par le contrôle qualité)
-        L.warning("Notation des versions indisponible (%s) : on garde la première", e)
-        return versions[0], 8.0, "non notée"
+    except Exception as e:  # juge indisponible : on ne poste JAMAIS un edit non noté (on réessaie au prochain passage)
+        L.warning("Notation des versions indisponible (%s) : edit non noté, donc refusé", e)
+        return versions[0], 0.0, "non notée (juge indisponible)"
 
 
 def _enregistrer(v: dict, note: float, avis: str) -> None:
