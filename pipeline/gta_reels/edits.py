@@ -236,7 +236,7 @@ def _pareil(a: dict, b: dict) -> bool:
     if sa == sb and abs(ka - kb) <= 6:
         return True
     try:
-        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 18
+        return bin(int(_analyse(a)["empreinte"], 16) ^ int(_analyse(b)["empreinte"], 16)).count("1") <= 14
     except (KeyError, ValueError):
         return False
 
@@ -541,7 +541,8 @@ MOTIFS = {"rapide": [4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 4, 2, 2, 4, 4]
           # style « ciné » des edits de trailer qui font 1 M de likes : ~1 s par plan, régulier, une respiration
           # mesuré sur les références de Vianney : 0,6 à 1,05 s par plan (moyenne 0,8 s), un premier plan plus
           # long pour poser l'ambiance, une seule respiration au milieu
-          "cine": [4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]}
+          # (ici en « unités » d'environ 0,8 s, converties en temps selon le tempo du son)
+          "cine": [2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]}
 
 
 def _attaques(f: Path, sr: int = 22050, hop: int = 256) -> tuple[np.ndarray, np.ndarray, float] | None:
@@ -718,7 +719,8 @@ def _placer(dispo: list[dict], durees: list[float]) -> list[dict]:
         img_ok = sum(1 for c in choisis if c.get("image")) < (len(choisis) + 1) // 3  # au plus 1 image sur 3 plans
         bon = [x for x in dispo if x.get("duree", DUREE_PLAN) >= d + 0.05 and (img_ok or not x.get("image"))
                and not any(_pareil(x, c) for c in choisis)  # jamais deux fois la même scène
-               and (not x.get("sujet") or sum(1 for c in choisis if c.get("sujet") == x.get("sujet")) < 3)]
+               and (not x.get("sujet") or sum(1 for c in choisis if c.get("sujet") == x.get("sujet"))
+                    < max(3, len(durees) // 4))]
         sujet = choisis[-1].get("sujet") if choisis else None
         p = (next((x for x in bon if x["clip"] != dernier and (not sujet or x.get("sujet") != sujet)), None)
              or next((x for x in bon if x["clip"] != dernier), None) or next(iter(bon), None))
@@ -798,7 +800,8 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
         dispo = tete + dispo[30:]
     cible = float(e.get("duree_s", 18))
     bpm, decalage, consigne, son = _tempo()
-    durees, cumuls = _grille(bpm, MOTIFS["cine"], cible, decalage=decalage)
+    unite = max(1, round(0.8 / (60 / bpm)))  # temps du son par plan pour viser ~0,8 s, comme les références
+    durees, cumuls = _grille(bpm, [u * unite for u in MOTIFS["cine"]], cible, decalage=decalage)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     choisis = _montee(choisis, durees)
