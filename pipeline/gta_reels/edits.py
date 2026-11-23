@@ -146,7 +146,7 @@ def _analyse(p: dict) -> dict:
       grises) en haut, en bas ou sur les côtés, repérées sur 3 images du plan ;
     - empreinte : un résumé de l'image (64 bits) pour reconnaître deux plans quasi identiques (même scène reprise
       dans deux vidéos), qui ne doivent jamais se retrouver dans le même edit."""
-    if p.get("analyse") == 4:
+    if p.get("analyse") == 5:
         return p
     cap = cv2.VideoCapture(p["fichier"])
     d = p.get("duree", DUREE_PLAN)
@@ -192,7 +192,28 @@ def _analyse(p: dict) -> dict:
     lum = float(np.mean([x.mean() for x in gris])) if gris else 128.0
     nettete = float(np.mean([cv2.Laplacian(x, cv2.CV_32F).var() for x in gris])) if gris else 100.0
     p.update(cadre=cadre, empreinte=f"{empreinte:016x}", centre=round(min(max(centre, 0.0), 1.0), 3),
-             lum=round(lum, 1), nettete=round(nettete, 1), analyse=4)
+             lum=round(lum, 1), nettete=round(nettete, 1), analyse=5)
+    # coupes cachées : le découpage laisse parfois 2-3 images d'un autre plan au début ou à la fin (micro-coupe
+    # qui rend l'edit haché) ; on garde le plus long morceau continu du plan
+    cap = cv2.VideoCapture(p["fichier"])
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    histos = []
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            break
+        h_ = cv2.calcHist([cv2.cvtColor(cv2.resize(img, (96, 54)), cv2.COLOR_BGR2HSV)], [0, 1], None, [16, 8],
+                          [0, 180, 0, 256])
+        histos.append(cv2.normalize(h_, h_).flatten())
+    cap.release()
+    coupes = [i for i in range(1, len(histos))
+              if cv2.compareHist(histos[i - 1], histos[i], cv2.HISTCMP_BHATTACHARYYA) > 0.45]
+    bornes = [0] + coupes + [len(histos)]
+    a_, b_ = max(zip(bornes, bornes[1:]), key=lambda x: x[1] - x[0]) if histos else (0, 0)
+    if coupes and b_ > a_:
+        p.update(debut=round((a_ + 1) / fps, 3), duree=round(max((b_ - a_ - 2) / fps, 0.1), 3))
+    else:
+        p["debut"] = 0.0
     if Path(p["fichier"] + ".json").exists():
         meta = {c: v for c, v in p.items() if c != "fichier"}
         Path(p["fichier"] + ".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -661,7 +682,7 @@ def _effet(d: float, src: float, k: int) -> tuple[str, str]:
 
 
 def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: str, cadre=None,
-            centre: float = 0.5) -> str:
+            centre: float = 0.5, debut: float = 0.0) -> str:
     """Filtre d'un plan : bandes noires retirées, recadrage W×H centré sur l'action ou le visage, vitesse,
     coupe à la durée d, mouvement de caméra."""
     pts = "setpts=PTS/1.4," if vit == "accel" else ""
@@ -678,7 +699,8 @@ def _chaine(entree: str, sortie: str, d: float, W: int, H: int, vit: str, mouv: 
     recadre = (f"crop='min(iw,ih*{W}/{H})':'min(ih,iw*{H}/{W})':"
                f"'max(0,min(iw-ow,iw*{centre:.3f}-ow/2))':'(ih-oh)/2',"
                f"scale={W}:{H}:flags=lanczos,cas=0.4,")
-    return (f"[{entree}]{rogne}{recadre}setsar=1,{pts}fps=30,"
+    depart = f"trim=start={debut:.3f},setpts=PTS-STARTPTS," if debut > 0 else ""
+    return (f"[{entree}]{depart}{rogne}{recadre}setsar=1,{pts}fps=30,"
             f"trim=duration={d:.3f},setpts=PTS-STARTPTS,{fx},setsar=1[{sortie}];")
 
 
@@ -793,7 +815,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
         vit, mouv = ("normal", "lent") if officiel else _effet(d, p.get("duree", DUREE_PLAN), i)
-        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"), p.get("centre", 0.5))
+        chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"), p.get("centre", 0.5), p.get("debut", 0.0))
                       + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v0][a]"
@@ -811,7 +833,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     coupes = list(np.cumsum(durees)[:-1])
     # flash blanc sur les coupes qui tombent sur un temps fort (début de mesure)
     fortes = [c for c, b in zip(coupes, cumuls) if b % 4 == 0] or coupes[1::3]
-    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes) if not (paysage and not y_texte) else ""
+    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes) if genre == "streams" else ""
     v = "v0"
     if flashs:
         graphe += f";[v0]eq=brightness='if({flashs},0.35,0)':eval=frame[vf]"
@@ -838,8 +860,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
                        f"borderw=6:bordercolor=black:shadowcolor=black@0.7:shadowx=6:shadowy=8:"
                        f"x=(w-text_w)/2:y={y + j * taille * 1.05:.0f}:enable='between(t,{t0:.2f},{t1:.2f})'[t{k}_{j}]")
             v = f"t{k}_{j}"
-    graphe += (f";[{v}]noise=alls=5:allf=t,drawtext=fontfile={FONT}:text='Bitume Minute':fontsize=34:"
-               f"fontcolor=white@0.55:x=(w-text_w)/2:y=h-{70 if paysage else 150}[vfin]")
+    graphe += f";[{v}]null[vfin]"  # image propre : ni filigrane ni grain (demande de Vianney)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *entrees, "-filter_complex", graphe,
                     "-map", "[vfin]", "-map", "[a]",
                     # qualité plus haute que les clips : TikTok recompresse, il faut lui donner un maximum de détails
@@ -981,12 +1002,13 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     paires, durees = [], []
     for d in grille:
         ok6 = [x for x in g6 if x.get("duree", DUREE_PLAN) >= d + 0.05 and not any(_pareil(x, q[1]) for q in paires)]
-        b = next((x for x in ok6 if not paires or x.get("sujet") != paires[-1][1].get("sujet")), None) or \
-            next(iter(ok6), None)
-        # face à face : un plan GTA V du même sujet que le plan GTA VI (voiture contre voiture…)
+        # face à face strict : un plan GTA V du MÊME sujet que le plan GTA VI (voiture contre voiture…),
+        # jamais deux paires du même sujet à la suite ; sans paire qui colle, on s'arrête là
         ok5 = [x for x in g5 if x.get("duree", DUREE_PLAN) >= d + 0.05 and not any(_pareil(x, q[0]) for q in paires)]
-        a = next((x for x in ok5 if b and x.get("sujet") and x.get("sujet") == b.get("sujet")), None) or \
-            next(iter(ok5), None)
+        avant = paires[-1][1].get("sujet") if paires else None
+        ordre6 = [x for x in ok6 if x.get("sujet") != avant] + [x for x in ok6 if x.get("sujet") == avant]
+        b, a = next(((y, x) for y in ordre6 if y.get("sujet") for x in ok5 if x.get("sujet") == y.get("sujet")),
+                    (None, None))
         if not (a and b):
             break
         g5.remove(a)
@@ -999,7 +1021,7 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     choisis = [p for paire in paires for p in paire]
     redac = _textes(choisis, "comparatif")
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
-    textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:3] or ["GTA 5 VS GTA 6"]
+    textes = ([t.strip().upper() for t in redac["textes"] if t.strip()] or ["GTA 5 VS GTA 6"])[:1]
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
@@ -1009,9 +1031,9 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
         entrees += ["-i", a["fichier"], "-i", b["fichier"]]
         h_, b_ = 2 * i, 2 * i + 1
         src = min(a.get("duree", DUREE_PLAN), b.get("duree", DUREE_PLAN))
-        vit, mouv = _effet(d, src, i)  # même effet sur les deux moitiés, pour comparer à armes égales
-        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _analyse(a).get("cadre"), a.get("centre", 0.5))
-                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _analyse(b).get("cadre"), b.get("centre", 0.5))
+        vit, mouv = "normal", "lent"  # pas de zoom qui claque ni d'accéléré : c'est ce qui rendait l'edit haché
+        chaine.append(_chaine(f"{h_}:v", f"h{i}", d, 1080, 960, vit, mouv, _analyse(a).get("cadre"), a.get("centre", 0.5), a.get("debut", 0.0))
+                      + _chaine(f"{b_}:v", f"b{i}", d, 1080, 960, vit, mouv, _analyse(b).get("cadre"), b.get("centre", 0.5), b.get("debut", 0.0))
                       + f"[h{i}][b{i}]vstack=inputs=2[v{i}];" + _son(f"{b_}:a", f"a{i}", d))
     n = len(paires)
     graphe = "".join(chaine) + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a]"
