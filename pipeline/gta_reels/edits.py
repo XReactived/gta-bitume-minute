@@ -781,7 +781,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     # les anciens plans verticaux encore en réserve donnent un dernier edit vertical
     # images officielles : comme les edits qui percent (1,2 M de likes), le plan du trailer en paysage d'origine,
     # sans recadrage, sans texte, sans effet ; les plans de streams restent en plein écran vertical
-    paysage = officiel
+    paysage = True  # tous les edits suivent les références de Vianney (style ciné paysage)
     W, H = (1920, 1080) if paysage else (1080, 1920)
     dispo = _plans_jeu("gta5" if genre == "online" else "gta6") if officiel else _plans_dispo(PLANS)
     if officiel:
@@ -796,7 +796,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
         dispo = tete + dispo[30:]
     cible = float(e.get("duree_s", 18))
     bpm, decalage, consigne, son = _tempo()
-    durees, cumuls = _grille(bpm, MOTIFS["cine" if officiel else "rapide"], cible, decalage=decalage)
+    durees, cumuls = _grille(bpm, MOTIFS["cine"], cible, decalage=decalage)
     choisis = _placer(dispo, durees)
     durees, cumuls = durees[:len(choisis)], cumuls[:len(choisis)]
     choisis = _montee(choisis, durees)
@@ -805,8 +805,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     redac = _textes(choisis, genre)
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
     textes = [t.strip().upper() for t in redac["textes"] if t.strip()][:4] or ["GTA 6"]
-    if officiel:
-        textes = []  # aucun texte : les images parlent d'elles-mêmes
+    textes = []  # aucun texte : les images parlent d'elles-mêmes (comme les références)
 
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
@@ -814,7 +813,7 @@ def _fabriquer_simple(genre: str, essai: int = 0) -> dict | None:
     entrees, chaine = [], []
     for i, (p, d) in enumerate(zip(choisis, durees)):
         entrees += ["-i", p["fichier"]]
-        vit, mouv = ("normal", "lent") if officiel else _effet(d, p.get("duree", DUREE_PLAN), i)
+        vit, mouv = "normal", "lent"
         chaine.append(_chaine(f"{i}:v", f"v{i}", d, W, H, vit, mouv, _analyse(p).get("cadre"), p.get("centre", 0.5), p.get("debut", 0.0))
                       + _son(f"{i}:a", f"a{i}", d))
     n = len(choisis)
@@ -833,7 +832,7 @@ def _finir(genre, choisis, durees, graphe, entrees, textes, redac, paysage, W, H
     coupes = list(np.cumsum(durees)[:-1])
     # flash blanc sur les coupes qui tombent sur un temps fort (début de mesure)
     fortes = [c for c, b in zip(coupes, cumuls) if b % 4 == 0] or coupes[1::3]
-    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes) if genre == "streams" else ""
+    flashs = "+".join(f"between(t,{c:.3f},{c + 0.07:.3f})" for c in fortes) if False else ""
     v = "v0"
     if flashs:
         graphe += f";[v0]eq=brightness='if({flashs},0.35,0)':eval=frame[vf]"
@@ -894,7 +893,7 @@ GENRES_JUGE = {
     "comparatif": "comparatif GTA 5 VS GTA 6 en écran partagé (GTA V en haut, GTA VI en bas, étiquettes en coin).",
     "rockstar": "edit GTA 6 avec les images officielles de Rockstar, en paysage.",
     "online": "edit GTA V / GTA Online avec les images officielles, en paysage.",
-    "streams": "edit avec des moments de jeu de streamers (sans leur webcam).",
+    "streams": "edit avec des moments de jeu de streamers (sans leur webcam), en paysage.",
 }
 SCHEMA_JUGE = {"type": "object", "properties": {
     "notes": {"type": "array", "items": {"type": "object", "properties": {
@@ -1021,7 +1020,7 @@ def _fabriquer_comparatif(essai: int = 0) -> dict | None:
     choisis = [p for paire in paires for p in paire]
     redac = _textes(choisis, "comparatif")
     redac["son"] = consigne or f"{redac['son']}, vers {bpm:.0f} BPM"
-    textes = ([t.strip().upper() for t in redac["textes"] if t.strip()] or ["GTA 5 VS GTA 6"])[:1]
+    textes = []  # comme les références : aucun texte, seulement les étiquettes GTA V / GTA VI
     dossier = DATA / "final" / f"edit-{dt.datetime.now():%Y%m%d-%H%M%S}"
     dossier.mkdir(parents=True, exist_ok=True)
     sortie = dossier / "video.mp4"
