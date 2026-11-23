@@ -539,7 +539,9 @@ BPM = [120, 128, 140, 150]  # tempos des sons d'edit qui tournent (drill, funk, 
 MOTIFS = {"rapide": [4, 4, 4, 2, 2, 4, 4, 4, 4, 2, 2, 4, 4, 4, 4, 4, 2, 2, 4, 4],
           "lent": [4, 4, 3, 4, 4, 3, 4, 4, 4, 3, 4, 4, 4, 4],
           # style « ciné » des edits de trailer qui font 1 M de likes : ~1 s par plan, régulier, une respiration
-          "cine": [2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2, 4, 2, 2, 2, 2]}
+          # mesuré sur les références de Vianney : 0,6 à 1,05 s par plan (moyenne 0,8 s), un premier plan plus
+          # long pour poser l'ambiance, une seule respiration au milieu
+          "cine": [4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]}
 
 
 def _attaques(f: Path, sr: int = 22050, hop: int = 256) -> tuple[np.ndarray, np.ndarray, float] | None:
